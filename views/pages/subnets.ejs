@@ -1,0 +1,58 @@
+<div class="subnets-page">
+  <div class="page-header">
+    <h2 class="page-title">网段使用明细</h2>
+    <div class="page-actions">
+      <button class="btn btn-secondary" id="btnExportSubnet" style="display:none">导出CSV</button>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <select id="subnetSelect" class="filter-select">
+      <option value="">请选择网段</option>
+    </select>
+    <button class="btn btn-primary" id="btnViewSubnet">查看明细</button>
+  </div>
+
+  <div id="subnetResult" style="display:none">
+    <div class="subnet-info" id="subnetInfo"></div>
+    <div class="table-wrap">
+      <table class="data-table" id="subnetTable">
+        <thead>
+          <tr>
+            <th data-sort="ip">主机号</th>
+            <th data-sort="ip">IP地址</th>
+            <th data-sort="device_name">设备名称</th>
+            <th data-sort="department">部门</th>
+            <th data-sort="user_name">使用人</th>
+            <th data-sort="status">状态</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="subnetBody"></tbody>
+      </table>
+    </div>
+
+    <div class="idle-section" id="idleSection" style="display:none">
+      <h3 class="section-title">未登记主机号（参考）</h3>
+      <div class="idle-list" id="idleList"></div>
+    </div>
+  </div>
+</div>
+
+<!-- View Detail Modal -->
+<div class="modal-overlay" id="subnetViewModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>网段记录详情</h3>
+      <button class="modal-close" data-close="subnetViewModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <table class="data-table" style="width:100%">
+        <tbody id="subnetViewBody"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="subnetViewModal">关闭</button>
+    </div>
+  </div>
+</div>

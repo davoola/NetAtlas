@@ -1,0 +1,71 @@
+<div class="import-page">
+  <h2 class="page-title">数据导入</h2>
+  <p class="page-desc">支持从 Excel (.xlsx) 或 CSV 文件导入 IP 登记数据。系统会自动映射列名并填充网关。</p>
+
+  <div class="import-card">
+    <div class="import-zone">
+      <h3>选择文件并导入</h3>
+      <form id="importForm" enctype="multipart/form-data">
+        <div class="form-group">
+          <label>文件类型</label>
+          <select id="importType">
+            <option value="excel">Excel (.xlsx)</option>
+            <option value="csv">CSV (.csv)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>重复IP处理策略</label>
+          <select id="importStrategy">
+            <option value="skip">跳过（保留原记录）</option>
+            <option value="update">更新（覆盖原记录）</option>
+            <option value="error">报错（不导入重复行）</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>选择文件</label>
+          <input type="file" id="importFile" accept=".xlsx,.csv" required>
+        </div>
+        <div class="import-actions">
+          <button type="submit" class="btn btn-primary" id="btnImport">开始导入</button>
+          <button type="button" class="btn btn-secondary" id="btnDownloadTemplate">下载导入模板</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="import-result" id="importResult" style="display:none">
+      <h3>导入结果</h3>
+      <div id="importResultContent"></div>
+    </div>
+  </div>
+
+  <div class="import-help">
+    <h4>列名映射参考</h4>
+    <p>系统会自动识别以下列名（不区分大小写）：</p>
+    <div class="mapping-grid">
+      <div class="mapping-item"><span class="map-label">VLAN</span><span class="map-arrow">→</span><span>VLAN字段</span></div>
+      <div class="mapping-item"><span class="map-label">IP地址 / IP</span><span class="map-arrow">→</span><span>IP地址</span></div>
+      <div class="mapping-item"><span class="map-label">MAC地址 / MAC</span><span class="map-arrow">→</span><span>MAC地址</span></div>
+      <div class="mapping-item"><span class="map-label">设备类型</span><span class="map-arrow">→</span><span>设备类型</span></div>
+      <div class="mapping-item"><span class="map-label">设备名称 / 设备名称/标识</span><span class="map-arrow">→</span><span>设备名称</span></div>
+      <div class="mapping-item"><span class="map-label">物理部署位置 / 部署位置</span><span class="map-arrow">→</span><span>物理位置</span></div>
+      <div class="mapping-item"><span class="map-label">所属部门 / 部门</span><span class="map-arrow">→</span><span>部门</span></div>
+      <div class="mapping-item"><span class="map-label">使用人</span><span class="map-arrow">→</span><span>使用人</span></div>
+      <div class="mapping-item"><span class="map-label">备注 / 备注信息</span><span class="map-arrow">→</span><span>备注</span></div>
+      <div class="mapping-item"><span class="map-label">使用状态 / 状态</span><span class="map-arrow">→</span><span>状态</span></div>
+      <div class="mapping-item"><span class="map-label">向日葵远程ID / 向日葵ID</span><span class="map-arrow">→</span><span>向日葵ID</span></div>
+      <div class="mapping-item"><span class="map-label">网关</span><span class="map-arrow">→</span><span>网关</span></div>
+    </div>
+    <h4 style="margin-top:16px">导入规则说明</h4>
+    <ul style="margin-top:4px;padding-left:20px;color:var(--neutral-600);line-height:1.8">
+      <li><strong>IP地址</strong>为必填列，格式必须为合法 IPv4（如 192.168.10.50）</li>
+      <li><strong>VLAN</strong>为空或填"自动获取"时，系统根据 IP 前缀自动识别所属 VLAN</li>
+      <li><strong>使用状态</strong>为空时默认"已使用"</li>
+      <li><strong>设备类型 / 部门 / 状态</strong>必须在数据字典中已存在，否则该字段会被清空并提示</li>
+      <li><strong>可用池范围校验</strong>：若 VLAN 规划中填写了"可用地址"（如 .10–.200），导入的 IP 主机号必须落在该范围内（网关地址除外）</li>
+      <li><strong>向日葵远程ID</strong>按纯文本处理，不会丢失前导零</li>
+      <li><strong>网关</strong>根据 IP 前缀自动填充，无需手动填写</li>
+      <li><strong>重复IP处理策略</strong>：跳过=保留原记录不导入；更新=用新数据覆盖原记录；报错=该行不导入并提示重复</li>
+      <li>导入结果最多展示前 20 条错误详情，如需查看完整原因请减小单批导入量</li>
+    </ul>
+  </div>
+</div>
