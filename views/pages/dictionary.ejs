@@ -1,0 +1,176 @@
+<div class="dictionary-page">
+  <h2 class="page-title">数据字典维护</h2>
+
+  <div class="dict-tabs">
+    <button class="dict-tab active" data-tab="device-types">设备类型</button>
+    <button class="dict-tab" data-tab="statuses">使用状态</button>
+    <button class="dict-tab" data-tab="departments">所属部门</button>
+    <button class="dict-tab" data-tab="vlan-plans">VLAN规划</button>
+    <button class="dict-tab" data-tab="prefix-gateways">网关映射</button>
+    <button class="dict-tab" data-tab="settings">系统配置</button>
+  </div>
+
+  <!-- Device Types -->
+  <div class="dict-panel active" id="panel-device-types">
+    <div class="dict-add-row">
+      <input type="text" id="newDeviceType" placeholder="新设备类型名称">
+      <button class="btn btn-primary" data-action="add-dict" data-type="device-types" data-input="newDeviceType">添加</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>ID</th><th>名称</th><th>说明</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="dictDeviceTypes"></tbody></table>
+    </div>
+  </div>
+
+  <!-- Statuses -->
+  <div class="dict-panel" id="panel-statuses">
+    <div class="dict-add-row">
+      <input type="text" id="newStatus" placeholder="新状态名称">
+      <button class="btn btn-primary" data-action="add-dict" data-type="statuses" data-input="newStatus">添加</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>ID</th><th>名称</th><th>说明</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="dictStatuses"></tbody></table>
+    </div>
+  </div>
+
+  <!-- Departments -->
+  <div class="dict-panel" id="panel-departments">
+    <div class="dict-add-row">
+      <input type="text" id="newDept" placeholder="新部门名称">
+      <button class="btn btn-primary" data-action="add-dict" data-type="departments" data-input="newDept">添加</button>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>ID</th><th>名称</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="dictDepartments"></tbody></table>
+    </div>
+  </div>
+
+  <!-- VLAN Plans -->
+  <div class="dict-panel" id="panel-vlan-plans">
+    <button class="btn btn-primary" id="btnAddVlan">+ 新增VLAN规划</button>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>说明</th><th>可用地址</th><th>排序</th><th>操作</th></tr></thead>
+      <tbody id="dictVlanPlans"></tbody></table>
+    </div>
+  </div>
+
+  <!-- Prefix Gateways -->
+  <div class="dict-panel" id="panel-prefix-gateways">
+    <button class="btn btn-primary" id="btnAddPrefix">+ 新增网关映射</button>
+    <div class="table-wrap">
+      <table class="data-table"><thead><tr><th>前缀</th><th>网关</th><th>默认VLAN</th><th>操作</th></tr></thead>
+      <tbody id="dictPrefixGateways"></tbody></table>
+    </div>
+  </div>
+
+  <!-- System Settings -->
+  <div class="dict-panel" id="panel-settings">
+    <div class="settings-form">
+      <div class="form-group">
+        <label>网站名称</label>
+        <input type="text" id="settingSiteName" placeholder="网站名称">
+        <button class="btn btn-primary" id="btnSaveSiteName">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- VLAN Plan Modal -->
+<div class="modal-overlay" id="vlanModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="vlanModalTitle">新增VLAN规划</h3><button class="modal-close" data-close="vlanModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="vlanForm" class="form-grid">
+        <input type="hidden" id="vlanPlanId">
+        <div class="form-group"><label>VLAN</label><input type="text" id="vp_vlan"></div>
+        <div class="form-group"><label>名称</label><input type="text" id="vp_name"></div>
+        <div class="form-group"><label>网段</label><input type="text" id="vp_subnet" placeholder="如 192.168.10.0/24"></div>
+        <div class="form-group"><label>子网掩码</label><input type="text" id="vp_mask" placeholder="如 255.255.255.0"></div>
+        <div class="form-group"><label>网关</label><input type="text" id="vp_gateway"></div>
+        <div class="form-group"><label>排序</label><input type="number" id="vp_sort_order" value="0"></div>
+        <div class="form-group full"><label>说明</label><input type="text" id="vp_description"></div>
+        <div class="form-group full"><label>可用地址说明</label><input type="text" id="vp_address_pool_note"></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="vlanModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveVlan">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Prefix Gateway Modal -->
+<div class="modal-overlay" id="prefixModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="prefixModalTitle">新增网关映射</h3><button class="modal-close" data-close="prefixModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="prefixForm" class="form-grid">
+        <input type="hidden" id="prefixGwId">
+        <div class="form-group"><label>IP前缀</label><input type="text" id="pg_prefix" placeholder="如 192.168.10"></div>
+        <div class="form-group"><label>网关</label><input type="text" id="pg_gateway" placeholder="如 192.168.10.1"></div>
+        <div class="form-group"><label>默认VLAN</label><input type="text" id="pg_default_vlan" placeholder="如 100"></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="prefixModal">取消</button>
+      <button class="btn btn-primary" id="btnSavePrefix">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Device Type Modal -->
+<div class="modal-overlay" id="deviceTypeModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="deviceTypeModalTitle">编辑设备类型</h3><button class="modal-close" data-close="deviceTypeModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="deviceTypeForm" class="form-grid">
+        <input type="hidden" id="dt_id">
+        <div class="form-group"><label>名称</label><input type="text" id="dt_name"></div>
+        <div class="form-group"><label>排序</label><input type="number" id="dt_sort_order" value="0"></div>
+        <div class="form-group full"><label>说明</label><input type="text" id="dt_description" placeholder="描述该设备类型的用途"></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="deviceTypeModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveDeviceType">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Status Modal -->
+<div class="modal-overlay" id="statusModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="statusModalTitle">编辑使用状态</h3><button class="modal-close" data-close="statusModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="statusForm" class="form-grid">
+        <input type="hidden" id="st_id">
+        <div class="form-group"><label>名称</label><input type="text" id="st_name"></div>
+        <div class="form-group"><label>排序</label><input type="number" id="st_sort_order" value="0"></div>
+        <div class="form-group full"><label>说明</label><input type="text" id="st_description" placeholder="描述该状态的含义"></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="statusModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveStatus">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Department Modal -->
+<div class="modal-overlay" id="deptModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="deptModalTitle">编辑所属部门</h3><button class="modal-close" data-close="deptModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="deptForm" class="form-grid">
+        <input type="hidden" id="dp_id">
+        <div class="form-group"><label>名称</label><input type="text" id="dp_name"></div>
+        <div class="form-group"><label>排序</label><input type="number" id="dp_sort_order" value="0"></div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="deptModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveDept">保存</button>
+    </div>
+  </div>
+</div>

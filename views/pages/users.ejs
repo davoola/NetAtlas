@@ -1,0 +1,92 @@
+<div class="users-page">
+  <div class="page-header">
+    <h2 class="page-title">用户管理</h2>
+    <div class="page-actions">
+      <button class="btn btn-primary" id="btnAddUser">+ 新增用户</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table" id="usersTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>用户名</th>
+          <th>显示名</th>
+          <th>角色</th>
+          <th>状态</th>
+          <th>VLAN权限</th>
+          <th>创建时间</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="usersBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- User Modal -->
+<div class="modal-overlay" id="userModal">
+  <div class="modal">
+    <div class="modal-header"><h3 id="userModalTitle">新增用户</h3><button class="modal-close" data-close="userModal">&times;</button></div>
+    <div class="modal-body">
+      <form id="userForm" class="form-grid">
+        <input type="hidden" id="userId">
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" id="u_username" required>
+        </div>
+        <div class="form-group" id="passwordGroup">
+          <label>密码</label>
+          <input type="password" id="u_password" required>
+        </div>
+        <div class="form-group">
+          <label>显示名</label>
+          <input type="text" id="u_display_name">
+        </div>
+        <div class="form-group">
+          <label>角色</label>
+          <select id="u_role">
+            <option value="viewer">普通用户</option>
+            <option value="admin">管理员</option>
+            <option value="superadmin">超级管理员</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>状态</label>
+          <select id="u_enabled">
+            <option value="1">启用</option>
+            <option value="0">禁用</option>
+          </select>
+        </div>
+      </form>
+      <div id="permSection" style="display:none">
+        <h4 class="section-title" style="margin-top:16px">VLAN管理权限</h4>
+        <div class="checkbox-grid" id="permVlanList"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="userModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveUser">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div class="modal-overlay" id="resetModal">
+  <div class="modal">
+    <div class="modal-header"><h3>重置密码</h3><button class="modal-close" data-close="resetModal">&times;</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="resetUserId">
+      <div class="form-group">
+        <label>新密码（至少6位）</label>
+        <input type="password" id="resetPassword" required>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="resetModal">取消</button>
+      <button class="btn btn-primary" id="btnResetPassword">确认重置</button>
+    </div>
+  </div>
+</div>
+

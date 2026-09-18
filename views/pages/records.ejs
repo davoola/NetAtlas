@@ -1,0 +1,141 @@
+<div class="records-page">
+  <div class="page-header">
+    <h2 class="page-title">IP登记台账</h2>
+    <div class="page-actions">
+      <button class="btn btn-primary" id="btnNewRecord" style="display:none">+ 新增登记</button>
+      <button class="btn btn-secondary" id="btnExportRecords">导出CSV</button>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <input type="text" id="searchInput" class="filter-input" placeholder="搜索 IP / 设备名称 / 使用人 / MAC">
+    <select id="filterVlan" class="filter-select"><option value="">全部VLAN</option></select>
+    <select id="filterDept" class="filter-select"><option value="">全部部门</option></select>
+    <select id="filterStatus" class="filter-select"><option value="">全部状态</option></select>
+    <select id="filterDeviceType" class="filter-select"><option value="">全部设备类型</option></select>
+    <button class="btn btn-secondary" id="btnFilter">筛选</button>
+    <button class="btn btn-ghost" id="btnReset">重置</button>
+    <label class="filter-checkbox" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--neutral-600);cursor:pointer">
+      <input type="checkbox" id="filterDupOnly"> 只看重复IP
+    </label>
+    <label class="filter-checkbox" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--neutral-600);cursor:pointer">
+      <input type="checkbox" id="filterMacConflictOnly"> 只看MAC冲突
+    </label>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table" id="recordsTable">
+      <thead>
+        <tr>
+          <th data-sort="ip">IP地址</th>
+          <th>MAC地址</th>
+          <th data-sort="device_name">设备名称</th>
+          <th data-sort="department">部门</th>
+          <th data-sort="user_name">使用人</th>
+          <th data-sort="status">状态</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="recordsBody"></tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="pagination"></div>
+</div>
+
+<!-- Edit/Create Modal -->
+<div class="modal-overlay" id="recordModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modalTitle">新增IP登记</h3>
+      <button class="modal-close" data-close="recordModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <form id="recordForm" class="form-grid">
+        <input type="hidden" id="recordId">
+        <div class="form-group">
+          <label>VLAN</label>
+          <select id="f_vlan" name="vlan"></select>
+        </div>
+        <div class="form-group">
+          <label>IP地址</label>
+          <input type="text" id="f_ip" name="ip" placeholder="如 192.168.10.100">
+        </div>
+        <div class="form-group">
+          <label>MAC地址</label>
+          <input type="text" id="f_mac" name="mac" placeholder="XX:XX:XX:XX:XX:XX">
+        </div>
+        <div class="form-group">
+          <label>设备类型</label>
+          <select id="f_device_type" name="device_type"></select>
+        </div>
+        <div class="form-group">
+          <label>设备名称/标识</label>
+          <input type="text" id="f_device_name" name="device_name">
+        </div>
+        <div class="form-group">
+          <label>物理部署位置</label>
+          <input type="text" id="f_location" name="location">
+        </div>
+        <div class="form-group">
+          <label>所属部门</label>
+          <select id="f_department" name="department"></select>
+        </div>
+        <div class="form-group">
+          <label>使用人</label>
+          <input type="text" id="f_user_name" name="user_name">
+        </div>
+        <div class="form-group">
+          <label>使用状态</label>
+          <select id="f_status" name="status"></select>
+        </div>
+        <div class="form-group">
+          <label>登记日期</label>
+          <input type="date" id="f_registered_at" name="registered_at">
+        </div>
+        <div class="form-group">
+          <label>上层交换机</label>
+          <input type="text" id="f_upper_switch" name="upper_switch">
+        </div>
+        <div class="form-group">
+          <label>交换机端口</label>
+          <input type="text" id="f_switch_port" name="switch_port">
+        </div>
+        <div class="form-group">
+          <label>向日葵远程ID</label>
+          <input type="text" id="f_sunlogin_id" name="sunlogin_id" placeholder="纯文本">
+        </div>
+        <div class="form-group">
+          <label>网关</label>
+          <input type="text" id="f_gateway" name="gateway" placeholder="自动带出，可修改">
+        </div>
+        <div class="form-group full">
+          <label>备注信息</label>
+          <input type="text" id="f_remark" name="remark">
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="recordModal">取消</button>
+      <button class="btn btn-primary" id="btnSaveRecord">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- View Detail Modal -->
+<div class="modal-overlay" id="viewModal">
+  <div class="modal">
+    <div class="modal-header">
+      <h3>IP登记详情</h3>
+      <button class="modal-close" data-close="viewModal">&times;</button>
+    </div>
+    <div class="modal-body">
+      <table class="data-table" id="viewTable" style="width:100%">
+        <tbody id="viewBody"></tbody>
+      </table>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" data-close="viewModal">关闭</button>
+    </div>
+  </div>
+</div>

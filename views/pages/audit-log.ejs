@@ -1,0 +1,44 @@
+<div class="records-page">
+  <div class="page-header">
+    <h2 class="page-title">操作审计日志</h2>
+  </div>
+
+  <div class="filter-bar">
+    <input type="text" id="auditSearch" class="filter-input" placeholder="搜索操作人 / 动作 / 摘要">
+    <input type="date" id="auditStartDate" class="filter-select" placeholder="开始日期">
+    <input type="date" id="auditEndDate" class="filter-select" placeholder="结束日期">
+    <select id="auditTargetType" class="filter-select">
+      <option value="">全部类型</option>
+      <option value="ip_record">IP记录</option>
+      <option value="status">使用状态</option>
+      <option value="department">部门</option>
+      <option value="device_type">设备类型</option>
+      <option value="vlan_plan">VLAN规划</option>
+      <option value="prefix_gateway">网关映射</option>
+      <option value="user">用户</option>
+      <option value="import">数据导入</option>
+      <option value="settings">系统配置</option>
+    </select>
+    <button class="btn btn-secondary" id="btnAuditFilter">筛选</button>
+    <button class="btn btn-ghost" id="btnAuditReset">重置</button>
+  </div>
+
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>时间</th>
+          <th>操作人</th>
+          <th>动作</th>
+          <th>对象类型</th>
+          <th>摘要</th>
+          <th>关联IP</th>
+        </tr>
+      </thead>
+      <tbody id="auditBody"></tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="auditPagination"></div>
+</div>
