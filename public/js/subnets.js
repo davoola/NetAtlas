@@ -15,12 +15,24 @@ async function loadSubnetOptions() {
     const firstPrefix = [];
     plans.forEach(p => {
       if (p.subnet) {
-        const prefix = p.subnet.split('/')[0].split('.').slice(0, 3).join('.');
+        const cidrParts = p.subnet.split('/');
+        const prefixLen = cidrParts.length === 2 ? parseInt(cidrParts[1], 10) : 24;
+        const prefix = cidrParts[0].split('.').slice(0, 3).join('.');
         const token = `plan:${p.id}`;
-        if (!seen.has(prefix) && (!allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan))) {
-          seen.add(prefix);
-          select.add(new Option(`${prefix} (${p.vlan} - ${p.name || ''})`, prefix));
-          firstPrefix.push(prefix);
+        if (prefixLen < 24) {
+          // Large subnet: use plan:CIDR token instead of 3-octet prefix
+          const cidrValue = `plan:${p.subnet}`;
+          if (!seen.has(cidrValue) && (!allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan))) {
+            seen.add(cidrValue);
+            select.add(new Option(`${p.subnet} (${p.vlan} - ${p.name || ''})`, cidrValue));
+            firstPrefix.push(cidrValue);
+          }
+        } else {
+          if (!seen.has(prefix) && (!allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan))) {
+            seen.add(prefix);
+            select.add(new Option(`${prefix} (${p.vlan} - ${p.name || ''})`, prefix));
+            firstPrefix.push(prefix);
+          }
         }
       }
     });
@@ -66,6 +78,7 @@ async function viewSubnet() {
   const prefix = document.getElementById('subnetSelect').value;
   if (!prefix) { showToast('请选择网段', 'error'); return; }
   currentPrefix = prefix;
+  const isLargeSubnet = prefix.startsWith('plan:');
   try {
     const params = new URLSearchParams({ sort: subnetSort, order: subnetOrder });
     const data = await api('/api/subnet/' + encodeURIComponent(prefix) + '?' + params);
@@ -75,30 +88,42 @@ async function viewSubnet() {
     const gateway = plan ? (plan.gateway && plan.gateway !== '-' ? plan.gateway : null) : null;
     const vlan = plan ? plan.vlan : null;
 
-    // Calculate available count using shared parsePoolRange, subtract gateway
-    const { rangeStart, rangeEnd } = parsePoolRange(plan);
-    if (plan && plan.address_pool_note) {
-      const testMatch = plan.address_pool_note.match(/\.?(\d{1,3})\s*[-–~至到]\s*\.?(\d{1,3})/);
-      if (!testMatch) {
-        console.warn('地址池说明格式无法识别，已按默认 1-254 计算:', plan.address_pool_note);
+    let subnetInfo;
+    let rangeStart = 1, rangeEnd = 254, gwHost = 1;
+    if (isLargeSubnet) {
+      const cidr = prefix.slice(5);
+      subnetInfo = `网段 <strong style="color:var(--primary)">${escapeHtml(cidr)}</strong> 共 <strong style="color:var(--primary)">${data.records.length}</strong> 条登记记录` +
+        (vlan ? ` | VLAN: <strong style="color:var(--primary)">${escapeHtml(vlan)}</strong>` : '') +
+        (plan && plan.mask ? ` | 掩码: ${escapeHtml(plan.mask)}` : '') +
+        ` <span style="color:var(--neutral-400);font-size:12px;margin-left:8px">（大子网模式，不计算剩余可用）</span>`;
+    } else {
+      // Calculate available count using shared parsePoolRange, subtract gateway
+      const pool = parsePoolRange(plan);
+      rangeStart = pool.rangeStart;
+      rangeEnd = pool.rangeEnd;
+      if (plan && plan.address_pool_note) {
+        const testMatch = plan.address_pool_note.match(/\.?(\d{1,3})\s*[-–~至到]\s*\.?(\d{1,3})/);
+        if (!testMatch) {
+          console.warn('地址池说明格式无法识别，已按默认 1-254 计算:', plan.address_pool_note);
+        }
       }
-    }
-    const gwHost = getGatewayHost(plan, prefix);
-    const totalPoolSize = rangeEnd - rangeStart + 1;
-    const gatewayInPool = gwHost >= rangeStart && gwHost <= rangeEnd ? 1 : 0;
-    const usedInPool = data.records.filter(r => {
-      if (!r.ip) return false;
-      const parts = r.ip.split('.');
-      if (parts.length !== 4) return false;
-      const h = parseInt(parts[3]);
-      return h >= rangeStart && h <= rangeEnd;
-    }).length;
-    const availableCount = totalPoolSize - gatewayInPool - usedInPool;
+      gwHost = getGatewayHost(plan, prefix);
+      const totalPoolSize = rangeEnd - rangeStart + 1;
+      const gatewayInPool = gwHost >= rangeStart && gwHost <= rangeEnd ? 1 : 0;
+      const usedInPool = data.records.filter(r => {
+        if (!r.ip) return false;
+        const parts = r.ip.split('.');
+        if (parts.length !== 4) return false;
+        const h = parseInt(parts[3]);
+        return h >= rangeStart && h <= rangeEnd;
+      }).length;
+      const availableCount = totalPoolSize - gatewayInPool - usedInPool;
 
-    const subnetInfo = `网段 ${escapeHtml(prefix)}.* 共 <strong style="color:var(--primary)">${data.records.length}</strong> 条登记记录；剩余可用 <strong style="color:var(--success)">${availableCount}</strong>` +
-      (vlan ? ` | VLAN: <strong style="color:var(--primary)">${escapeHtml(vlan)}</strong>` : '') +
-      (gateway ? ` | 网关: ${escapeHtml(gateway)}` : '') +
-      (plan && plan.mask ? ` | 掩码: ${escapeHtml(plan.mask)}` : '');
+      subnetInfo = `网段 ${escapeHtml(prefix)}.* 共 <strong style="color:var(--primary)">${data.records.length}</strong> 条登记记录；剩余可用 <strong style="color:var(--success)">${availableCount}</strong>` +
+        (vlan ? ` | VLAN: <strong style="color:var(--primary)">${escapeHtml(vlan)}</strong>` : '') +
+        (gateway ? ` | 网关: ${escapeHtml(gateway)}` : '') +
+        (plan && plan.mask ? ` | 掩码: ${escapeHtml(plan.mask)}` : '');
+    }
     document.getElementById('subnetInfo').innerHTML = subnetInfo;
 
     const tbody = document.getElementById('subnetBody');
@@ -130,29 +155,33 @@ async function viewSubnet() {
       });
     }
 
-    // Idle host analysis: use address_pool_note range, exclude gateway
-    const usedHosts = new Set();
-    data.records.forEach(r => {
-      if (r.ip) {
-        const parts = r.ip.split('.');
-        if (parts.length === 4) usedHosts.add(parseInt(parts[3]));
-      }
-    });
-
-    const idleList = [];
-    for (let h = rangeStart; h <= rangeEnd; h++) {
-      if (h === gwHost) continue; // skip gateway
-      if (!usedHosts.has(h)) idleList.push(h);
-    }
-    const idleDiv = document.getElementById('idleList');
-    if (idleList.length > 0) {
-      document.getElementById('idleSection').style.display = '';
-      idleDiv.innerHTML = idleList.map(h => `<span class="idle-badge">.${h}</span>`).join('');
-    } else {
+    // Idle host analysis: skip for large subnets
+    if (isLargeSubnet) {
       document.getElementById('idleSection').style.display = 'none';
+    } else {
+      const usedHosts = new Set();
+      data.records.forEach(r => {
+        if (r.ip) {
+          const parts = r.ip.split('.');
+          if (parts.length === 4) usedHosts.add(parseInt(parts[3]));
+        }
+      });
+
+      const idleList = [];
+      for (let h = rangeStart; h <= rangeEnd; h++) {
+        if (h === gwHost) continue; // skip gateway
+        if (!usedHosts.has(h)) idleList.push(h);
+      }
+      const idleDiv = document.getElementById('idleList');
+      if (idleList.length > 0) {
+        document.getElementById('idleSection').style.display = '';
+        idleDiv.innerHTML = idleList.map(h => `<span class="idle-badge">.${h}</span>`).join('');
+      } else {
+        document.getElementById('idleSection').style.display = 'none';
+      }
     }
   } catch (e) {
-    showToast('加载网段明细失败: ' + e.message, 'error');
+    showToast('加载DHCP网段明细失败: ' + e.message, 'error');
   }
 }
 

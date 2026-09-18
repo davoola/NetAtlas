@@ -12,6 +12,26 @@ function ipToInt(ip) {
   return ((a << 24) >>> 0) + (b << 16) + (c << 8) + d;
 }
 
+function parseCidr(cidr) {
+  if (!cidr || typeof cidr !== 'string') return null;
+  const m = cidr.match(/^(.+?)\/(\d+)$/);
+  if (!m) return null;
+  const base = ipToInt(m[1]);
+  const prefix = parseInt(m[2], 10);
+  if (base === null || prefix < 0 || prefix > 32) return null;
+  const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  const network = (base & mask) >>> 0;
+  const broadcast = (network | (~mask >>> 0)) >>> 0;
+  return { network, broadcast, prefix, mask };
+}
+
+function ipInCidr(ip, cidr) {
+  const intIp = ipToInt(ip);
+  const parsed = parseCidr(cidr);
+  if (intIp === null || !parsed) return false;
+  return intIp >= parsed.network && intIp <= parsed.broadcast;
+}
+
 function lookupGateway(ip) {
   if (!ip) return null;
   const parts = ip.split('.');
@@ -23,11 +43,11 @@ function lookupGateway(ip) {
 
 function lookupVlanByIp(ip) {
   if (!ip) return null;
-  const parts = ip.split('.');
-  if (parts.length < 3) return null;
-  const prefix = parts.slice(0, 3).join('.');
-  const row = db.prepare('SELECT default_vlan FROM ip_prefix_gateways WHERE prefix = ?').get(prefix);
-  return row ? row.default_vlan : null;
+  const plans = db.prepare('SELECT vlan, subnet FROM vlan_plans').all();
+  for (const plan of plans) {
+    if (plan.subnet && ipInCidr(ip, plan.subnet)) return plan.vlan;
+  }
+  return null;
 }
 
 function getDuplicateIpSet() {
@@ -61,8 +81,8 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
       const plan = db.prepare('SELECT vlan, subnet FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
       if (plan) {
         where.push('vlan = ?'); params.push(plan.vlan);
-        const prefix = plan.subnet ? plan.subnet.split('/')[0].split('.').slice(0, 3).join('.') : '';
-        if (prefix) { where.push('ip LIKE ?'); params.push(`${prefix}.%`); }
+        const parsed = plan.subnet ? parseCidr(plan.subnet) : null;
+        if (parsed) { where.push('ip_sort >= ? AND ip_sort <= ?'); params.push(parsed.network, parsed.broadcast); }
       }
     } else {
       where.push('vlan = ?'); params.push(vlan);
@@ -142,11 +162,14 @@ function getPlanForVlanToken(token) {
   return null;
 }
 
-function parsePoolRangeServer(plan) {
+function parsePoolRangeServer(plan, parsed) {
   let rangeStart = 1, rangeEnd = 254;
   if (plan && plan.address_pool_note) {
     const m = plan.address_pool_note.match(/\.?(\d{1,3})\s*[-–~至到]\s*\.?(\d{1,3})/);
     if (m) { rangeStart = parseInt(m[1], 10); rangeEnd = parseInt(m[2], 10); }
+  } else if (parsed) {
+    const totalHosts = parsed.broadcast - parsed.network;
+    rangeEnd = totalHosts > 2 ? totalHosts - 1 : totalHosts;
   }
   return { rangeStart, rangeEnd };
 }
@@ -155,32 +178,33 @@ function validateIpForVlan(ip, vlanToken) {
   if (!ip || !vlanToken) return null;
   const plan = getPlanForVlanToken(vlanToken);
   if (plan && plan.subnet) {
-    const prefix = plan.subnet.split('/')[0].split('.').slice(0, 3).join('.');
-    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(String(ip)) || !String(ip).startsWith(prefix + '.')) {
-      throw new Error(`IP地址必须属于所选VLAN网段（${prefix}.x）`);
+    if (!isValidIp(ip) || !ipInCidr(ip, plan.subnet)) {
+      throw new Error(`IP地址必须在所选VLAN网段（${plan.subnet}）范围内`);
     }
-    const { rangeStart, rangeEnd } = parsePoolRangeServer(plan);
-    const host = parseInt(String(ip).split('.')[3], 10);
-    const gatewayHost = plan.gateway && plan.gateway !== '-' ? parseInt(String(plan.gateway).split('.')[3], 10) : null;
-    if (host !== gatewayHost && (host < rangeStart || host > rangeEnd)) {
-      throw new Error(`IP地址超出该VLAN可用池范围（${prefix}.${rangeStart}-${rangeEnd}）`);
+    const parsed = parseCidr(plan.subnet);
+    const { rangeStart, rangeEnd } = parsePoolRangeServer(plan, parsed);
+    const hostOffset = (ipToInt(ip) - parsed.network) >>> 0;
+    const gatewayInt = plan.gateway && plan.gateway !== '-' ? ipToInt(plan.gateway) : null;
+    const gatewayOffset = gatewayInt !== null ? (gatewayInt - parsed.network) >>> 0 : null;
+    if (hostOffset !== gatewayOffset && (hostOffset < rangeStart || hostOffset > rangeEnd)) {
+      throw new Error(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
     }
     return plan;
   }
   const plans = db.prepare('SELECT * FROM vlan_plans WHERE vlan = ?').all(String(vlanToken));
   if (plans.length > 0) {
-    const matched = plans.find(candidate => {
-      if (!candidate.subnet) return false;
-      const prefix = candidate.subnet.split('/')[0].split('.').slice(0, 3).join('.');
-      return String(ip).startsWith(prefix + '.');
-    });
-    if (!matched) throw new Error('IP地址与所选VLAN的子网不一致');
-    const { rangeStart, rangeEnd } = parsePoolRangeServer(matched);
-    const host = parseInt(String(ip).split('.')[3], 10);
-    const gatewayHost = matched.gateway && matched.gateway !== '-' ? parseInt(String(matched.gateway).split('.')[3], 10) : null;
-    if (host !== gatewayHost && (host < rangeStart || host > rangeEnd)) {
-      const prefix = matched.subnet.split('/')[0].split('.').slice(0, 3).join('.');
-      throw new Error(`IP地址超出该VLAN可用池范围（${prefix}.${rangeStart}-${rangeEnd}）`);
+    const matched = plans.find(candidate => candidate.subnet && ipInCidr(ip, candidate.subnet));
+    if (!matched) {
+      const subnets = plans.map(p => p.subnet).filter(Boolean).join(', ');
+      throw new Error(`IP地址必须在所选VLAN网段（${subnets}）范围内`);
+    }
+    const parsed = parseCidr(matched.subnet);
+    const { rangeStart, rangeEnd } = parsePoolRangeServer(matched, parsed);
+    const hostOffset = (ipToInt(ip) - parsed.network) >>> 0;
+    const gatewayInt = matched.gateway && matched.gateway !== '-' ? ipToInt(matched.gateway) : null;
+    const gatewayOffset = gatewayInt !== null ? (gatewayInt - parsed.network) >>> 0 : null;
+    if (hostOffset !== gatewayOffset && (hostOffset < rangeStart || hostOffset > rangeEnd)) {
+      throw new Error(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
     }
     return matched;
   }
@@ -262,10 +286,10 @@ function getVlanStats() {
   const result = [];
 
   for (const plan of plans) {
-    const prefix = plan.subnet ? plan.subnet.split('/')[0].split('.').slice(0, 3).join('.') : '';
+    const parsed = plan.subnet ? parseCidr(plan.subnet) : null;
     let cnt;
-    if (prefix) {
-      cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip LIKE ?').get(plan.vlan, `${prefix}.%`).cnt;
+    if (parsed) {
+      cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort >= ? AND ip_sort <= ?').get(plan.vlan, parsed.network, parsed.broadcast).cnt;
     } else {
       cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ?').get(plan.vlan).cnt;
     }
@@ -305,15 +329,37 @@ function getDeviceTypeStats() {
 }
 
 function getSubnetRecords(prefix, sort = 'ip', order = 'asc') {
-  const likePattern = prefix + '.%';
   const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
   const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
-  const rows = db.prepare(`
-    SELECT * FROM ip_records WHERE ip LIKE ?
-    ORDER BY ${sortCol} ${sortDir}
-  `).all(likePattern);
+  const prefixParts = String(prefix).split('.').filter(Boolean);
+  let rows;
+  if (prefixParts.length === 3) {
+    const baseInt = ipToInt(prefixParts.join('.') + '.0');
+    if (baseInt !== null) {
+      const bcastInt = (baseInt | 0x000000FF) >>> 0;
+      rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(baseInt, bcastInt);
+    } else {
+      rows = [];
+    }
+  } else {
+    rows = db.prepare(`SELECT * FROM ip_records WHERE ip LIKE ? ORDER BY ${sortCol} ${sortDir}`).all(`${prefix}.%`);
+  }
+  const dupSet = getDuplicateIpSet();
+  const macConflictSet = getMacConflictMacSet();
+  rows.forEach(r => { r.is_duplicate = dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(r.mac); });
+  return rows;
+}
+
+function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc') {
+  const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
+  let sortCol = validSorts.includes(sort) ? sort : 'ip';
+  if (sortCol === 'ip') sortCol = 'ip_sort';
+  const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+  const parsed = parseCidr(cidr);
+  if (!parsed) return [];
+  const rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(parsed.network, parsed.broadcast);
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
   rows.forEach(r => { r.is_duplicate = dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(r.mac); });
@@ -321,8 +367,8 @@ function getSubnetRecords(prefix, sort = 'ip', order = 'asc') {
 }
 
 module.exports = {
-  lookupGateway, lookupVlanByIp, getDuplicateIpSet, getMacConflictMacSet, validateIpForVlan, isValidIp, ipToInt, parsePoolRangeServer,
+  lookupGateway, lookupVlanByIp, getDuplicateIpSet, getMacConflictMacSet, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
-  getSubnetRecords,
+  getSubnetRecords, getSubnetRecordsByCidr,
 };
