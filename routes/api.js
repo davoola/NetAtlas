@@ -129,22 +129,36 @@ router.delete('/records/:id', requireAuth, (req, res) => {
 
 // --- Subnet records ---
 router.get('/subnet/:prefix', requireAuth, (req, res) => {
-  const prefix = req.params.prefix;
+  const raw = decodeURIComponent(req.params.prefix);
   const scope = getReadableVlanScope(req);
-  const plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
-  if (!scope.all) {
-    if (plan) {
-      if (!scope.vlans.includes(plan.vlan)) {
-        return res.status(403).json({ error: '您没有查看该网段的权限' });
-      }
-    } else {
-      return res.status(403).json({ error: '该网段未在规划中，或您没有权限查看' });
+  let plan, records;
+  if (raw.startsWith('plan:')) {
+    const cidr = raw.slice(5);
+    plan = dictService.getVlanPlans().find(p => p.subnet === cidr);
+    if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
+    if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+      return res.status(403).json({ error: '您没有查看该网段的权限' });
     }
+    const sort = req.query.sort || 'ip';
+    const order = req.query.order || 'asc';
+    records = ipService.getSubnetRecordsByCidr(cidr, sort, order);
+  } else {
+    const prefix = raw;
+    plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
+    if (!scope.all) {
+      if (plan) {
+        if (!scope.vlans.includes(plan.vlan)) {
+          return res.status(403).json({ error: '您没有查看该网段的权限' });
+        }
+      } else {
+        return res.status(403).json({ error: '该网段未在规划中，或您没有权限查看' });
+      }
+    }
+    const sort = req.query.sort || 'ip';
+    const order = req.query.order || 'asc';
+    records = ipService.getSubnetRecords(prefix, sort, order);
   }
-  const sort = req.query.sort || 'ip';
-  const order = req.query.order || 'asc';
-  const records = ipService.getSubnetRecords(prefix, sort, order);
-  res.json({ prefix, records, plan: plan || null });
+  res.json({ prefix: raw, records, plan: plan || null });
 });
 
 router.get('/my-vlan-permissions', requireAuth, (req, res) => {
@@ -412,19 +426,31 @@ router.get('/export/records', requireAuth, (req, res) => {
 
 // --- Export subnet (CSV) ---
 router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
-  const prefix = req.params.prefix;
+  const raw = decodeURIComponent(req.params.prefix);
   const scope = getReadableVlanScope(req);
-  const plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
-  if (!scope.all) {
-    if (plan) {
-      if (!scope.vlans.includes(plan.vlan)) {
-        return res.status(403).json({ error: '您没有导出该网段的权限' });
-      }
-    } else {
-      return res.status(403).json({ error: '该网段未在规划中，或您没有权限导出' });
+  let plan, records;
+  if (raw.startsWith('plan:')) {
+    const cidr = raw.slice(5);
+    plan = dictService.getVlanPlans().find(p => p.subnet === cidr);
+    if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
+    if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+      return res.status(403).json({ error: '您没有导出该网段的权限' });
     }
+    records = ipService.getSubnetRecordsByCidr(cidr);
+  } else {
+    const prefix = raw;
+    plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
+    if (!scope.all) {
+      if (plan) {
+        if (!scope.vlans.includes(plan.vlan)) {
+          return res.status(403).json({ error: '您没有导出该网段的权限' });
+        }
+      } else {
+        return res.status(403).json({ error: '该网段未在规划中，或您没有权限导出' });
+      }
+    }
+    records = ipService.getSubnetRecords(prefix);
   }
-  const records = ipService.getSubnetRecords(prefix);
   const headers = ['主机号','IP地址','设备名称','部门','使用人','状态','MAC地址','网关','VLAN','设备类型','物理位置','上层交换机','交换机端口','向日葵ID','登记日期','备注'];
   const cols = ['host','ip','device_name','department','user_name','status','mac','gateway','vlan','device_type','location','upper_switch','switch_port','sunlogin_id','registered_at','remark'];
   let csv = '\uFEFF' + headers.join(',') + '\n';

@@ -52,14 +52,32 @@ function populateFormSelects() {
   dictionaries.statuses.forEach(s => fSt.add(new Option(s.name, s.name)));
 }
 
-function getVlanPrefix(vlanToken) {
+function getVlanSubnet(vlanToken) {
   if (!vlanToken) return null;
   const m = String(vlanToken).match(/^plan:(\d+)$/);
   if (m) {
     const plan = dictionaries.vlanPlans.find(p => p.id === Number(m[1]));
-    if (plan && plan.subnet) return plan.subnet.split('/')[0].split('.').slice(0, 3).join('.');
+    if (plan && plan.subnet) return plan.subnet;
   }
   return null;
+}
+
+function ipToIntJS(ip) {
+  const parts = String(ip).split('.').map(Number);
+  if (parts.length !== 4 || parts.some(n => isNaN(n) || n < 0 || n > 255)) return null;
+  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3];
+}
+
+function ipInCidrJS(ip, cidr) {
+  const intIp = ipToIntJS(ip);
+  if (intIp === null) return false;
+  const m = String(cidr).match(/^(.+?)\/(\d+)$/);
+  if (!m) return false;
+  const base = ipToIntJS(m[1]);
+  const prefix = parseInt(m[2], 10);
+  if (base === null || prefix < 0 || prefix > 32) return false;
+  const mask = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+  return (intIp & mask) >>> 0 === (base & mask) >>> 0;
 }
 
 async function loadRecords() {
@@ -182,7 +200,7 @@ async function editRecord(id) {
     const record = await api(`/api/records/${id}`);
     document.getElementById('modalTitle').textContent = '编辑IP登记';
     document.getElementById('recordId').value = record.id;
-    const matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan && p.subnet && record.ip && record.ip.startsWith(p.subnet.split('/')[0].split('.').slice(0, 3).join('.') + '.'));
+    const matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan && p.subnet && record.ip && ipInCidrJS(record.ip, p.subnet));
     document.getElementById('f_vlan').value = matchingPlan ? `plan:${matchingPlan.id}` : (record.vlan || '');
     document.getElementById('f_ip').value = record.ip || '';
     document.getElementById('f_mac').value = record.mac || '';
@@ -233,11 +251,11 @@ async function saveRecord() {
   if (!ip) return showToast('IP地址不能为空', 'error');
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return showToast('IP地址格式不正确', 'error');
 
-  // Validate IP matches VLAN subnet
+  // Validate IP matches VLAN subnet using CIDR
   if (vlanToken && ip) {
-    const vlanPrefix = getVlanPrefix(vlanToken);
-    if (vlanPrefix && !ip.startsWith(vlanPrefix + '.')) {
-      showToast(`IP地址必须与所选VLAN子网一致（${vlanPrefix}.x）`, 'error');
+    const vlanSubnet = getVlanSubnet(vlanToken);
+    if (vlanSubnet && !ipInCidrJS(ip, vlanSubnet)) {
+      showToast(`IP地址必须在所选VLAN网段（${vlanSubnet}）范围内`, 'error');
       return;
     }
   }
@@ -329,16 +347,17 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
   });
 
-  // When VLAN changes, validate IP prefix and auto-fill gateway
+  // When VLAN changes, validate IP against CIDR and auto-fill gateway
   document.getElementById('f_vlan').addEventListener('change', function() {
-    const prefix = getVlanPrefix(this.value);
+    const subnet = getVlanSubnet(this.value);
     const ipInput = document.getElementById('f_ip');
-    if (prefix && ipInput.value.trim()) {
-      if (!ipInput.value.trim().startsWith(prefix + '.')) {
-        showToast(`IP地址应与VLAN子网一致（${prefix}.x）`, 'warning');
+    if (subnet && ipInput.value.trim()) {
+      if (!ipInCidrJS(ipInput.value.trim(), subnet)) {
+        showToast(`IP地址应在所选VLAN网段（${subnet}）范围内`, 'warning');
       }
     }
     // Auto-fill gateway from prefix gateway mapping
+    const prefix = subnet ? subnet.split('/')[0].split('.').slice(0, 3).join('.') : null;
     if (prefix) {
       api('/api/dict/prefix-gateways').then(gws => {
         const gw = gws.find(g => g.prefix === prefix);

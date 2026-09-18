@@ -50,7 +50,7 @@ const FIELD_MAP = {
 function normalizeVlan(val) {
   if (val === null || val === undefined || val === '') return null;
   const s = String(val).trim();
-  if (s === '自动获取' || s === 'DHCP' || s === 'dhcp') return null;
+  if (s === '自动获取') return null;
   const num = parseInt(s);
   if (!isNaN(num)) return String(num);
   return s;

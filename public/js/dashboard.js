@@ -5,7 +5,6 @@ async function loadDashboard() {
     document.getElementById('kpi-total').textContent = k.total;
     document.getElementById('kpi-used').textContent = k.used;
     document.getElementById('kpi-reserved').textContent = k.reserved;
-    document.getElementById('kpi-deprecated').textContent = k.deprecated;
     document.getElementById('kpi-mac').textContent = k.withMac;
     document.getElementById('kpi-sunlogin').textContent = k.withSunlogin;
     document.getElementById('kpi-dup').textContent = k.dupIps;
