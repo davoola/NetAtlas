@@ -33,7 +33,7 @@ async function loadDictVlanPlans() {
   document.getElementById('dictVlanPlans').innerHTML = items.map(d => `
     <tr><td>${escapeHtml(d.vlan)}</td><td>${escapeHtml(d.name||'-')}</td><td>${escapeHtml(d.subnet||'-')}</td>
     <td>${escapeHtml(d.mask||'-')}</td><td>${escapeHtml(d.gateway||'-')}</td><td>${escapeHtml(d.description||'-')}</td>
-    <td>${escapeHtml(d.address_pool_note||'-')}</td><td>${d.sort_order}</td>
+    <td>${escapeHtml(d.address_pool_note||'-')}</td><td>${d.is_dynamic ? '是' : '否'}</td><td>${d.sort_order}</td>
     ${canManageDict ? `<td><button class="btn btn-sm btn-secondary" data-action="edit" data-type="vlan-plans" data-id="${d.id}">编辑</button>
     <button class="btn btn-sm btn-danger" data-action="delete" data-type="vlan-plans" data-id="${d.id}">删除</button></td>` : '<td>-</td>'}</tr>`).join('');
   bindDictActions('dictVlanPlans');
@@ -110,6 +110,7 @@ async function editVlanPlan(id) {
   document.getElementById('vp_description').value = p.description || '';
   document.getElementById('vp_address_pool_note').value = p.address_pool_note || '';
   document.getElementById('vp_sort_order').value = p.sort_order || 0;
+  document.getElementById('vp_is_dynamic').checked = !!p.is_dynamic;
   document.getElementById('vlanModal').classList.add('show');
 };
 
@@ -128,10 +129,11 @@ async function saveVlanPlan() {
     description: document.getElementById('vp_description').value.trim(),
     address_pool_note: document.getElementById('vp_address_pool_note').value.trim(),
     sort_order: parseInt(document.getElementById('vp_sort_order').value) || 0,
+    is_dynamic: document.getElementById('vp_is_dynamic').checked ? 1 : 0,
   };
   if (!data.vlan) { if (btn) btn.disabled = false; return showToast('VLAN编号不能为空', 'error'); }
-  if (!data.subnet) { if (btn) btn.disabled = false; return showToast('网段不能为空', 'error'); }
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(data.subnet)) { if (btn) btn.disabled = false; return showToast('网段格式不正确，应为如 192.168.10.0/24', 'error'); }
+  if (!data.is_dynamic && !data.subnet) { if (btn) btn.disabled = false; return showToast('网段不能为空（动态IP池可不填）', 'error'); }
+  if (data.subnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(data.subnet)) { if (btn) btn.disabled = false; return showToast('网段格式不正确，应为如 192.168.10.0/24', 'error'); }
   if (data.gateway && !/^\d{1,3}(\.\d{1,3}){3}$/.test(data.gateway)) { if (btn) btn.disabled = false; return showToast('网关IP格式不正确', 'error'); }
   try {
     if (id) {
@@ -197,7 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Hide add buttons for non-superadmin
   if (!canManageDict) {
-    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName, #btnCheckpoint, #btnCleanupAuditLogs').forEach(el => el.style.display = 'none');
     document.getElementById('settingSiteName').readOnly = true;
   }
 
@@ -238,6 +240,32 @@ document.addEventListener('DOMContentLoaded', () => {
         await api('/api/settings/site_name', { method: 'PUT', body: JSON.stringify({ value: val }) });
         showToast('保存成功，刷新页面生效', 'success');
       } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
+    });
+
+    document.getElementById('btnCleanupAuditLogs').addEventListener('click', async () => {
+  const input = document.getElementById('auditCleanupBeforeDate');
+  if (!input.value) return showToast('请选择清理截止日期', 'error');
+  if (!confirm(`确定清理 ${input.value} 之前的审计日志吗？此操作不可撤销。`)) return;
+  const btn = document.getElementById('btnCleanupAuditLogs');
+  btn.disabled = true;
+  try {
+    const result = await api('/api/audit-logs/cleanup', { method: 'POST', body: JSON.stringify({ beforeDate: input.value }) });
+    showToast(result.message || '审计日志清理完成', 'success');
+  } catch (e) { showToast('清理失败: ' + e.message, 'error'); }
+  finally { btn.disabled = false; }
+});
+
+ document.getElementById('btnCheckpoint').addEventListener('click', async () => {
+      const btn = document.getElementById('btnCheckpoint');
+      btn.disabled = true;
+      try {
+        const result = await api('/api/system/checkpoint', { method: 'POST' });
+        showToast(result.message || '数据库已成功写入主文件', 'success');
+      } catch (e) {
+        showToast('操作失败: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
     });
   }
 

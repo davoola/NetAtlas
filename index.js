@@ -5,6 +5,7 @@ const flash = require('connect-flash');
 const expressLayouts = require('express-ejs-layouts');
 const path = require('path');
 const dictService = require('./services/dictService');
+const { DEFAULT_SITE_NAME } = require('./config/site');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,7 +42,7 @@ app.use(session({
 app.use(flash());
 
 app.use((req, res, next) => {
-  res.locals.siteName = dictService.getSetting('site_name', '网图·IP管家');
+  res.locals.siteName = dictService.getSetting('site_name', DEFAULT_SITE_NAME);
   res.locals.user = req.session.user || null;
   res.locals.activePage = '';
   res.locals.extraScript = null;
@@ -62,6 +63,9 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error(err.stack);
+  if (req.path.startsWith('/api/')) {
+    return res.status(500).json({ error: err.message || '服务器内部错误' });
+  }
   res.status(500).render('pages/error', {
     title: '系统错误',
     message: '系统内部错误，请联系管理员',

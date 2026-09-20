@@ -1,6 +1,7 @@
 const Database = require('./wrapper');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const { DEFAULT_SITE_NAME } = require('../config/site');
 
 const DB_PATH = path.join(__dirname, 'ipam.db');
 
@@ -112,6 +113,17 @@ function initDatabase() {
     );
   `);
 
+  // Normalize legacy Excel serial dates that may have been imported as plain numbers.
+  const legacyDateRows = db.prepare("SELECT id, registered_at FROM ip_records WHERE registered_at GLOB '[0-9]*.[0-9]*'").all();
+  const updateLegacyDate = db.prepare('UPDATE ip_records SET registered_at = ? WHERE id = ?');
+  for (const row of legacyDateRows) {
+    const serial = Number(row.registered_at);
+    if (Number.isFinite(serial) && serial > 0 && serial < 100000) {
+      const date = new Date(Date.UTC(1899, 11, 30) + serial * 86400000);
+      if (!Number.isNaN(date.getTime())) updateLegacyDate.run(date.toISOString().slice(0, 10), row.id);
+    }
+  }
+
   // Migration: add ip_sort column if missing (safe for existing DBs)
   try {
     db.prepare("SELECT ip_sort FROM ip_records LIMIT 1").get();
@@ -137,6 +149,13 @@ function initDatabase() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ip_records_vlan ON ip_records(vlan);`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ip_records_status ON ip_records(status);`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ip_records_department ON ip_records(department);`);
+
+  // Migration: add is_dynamic column to vlan_plans if missing
+  try {
+    db.prepare("SELECT is_dynamic FROM vlan_plans LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE vlan_plans ADD COLUMN is_dynamic INTEGER DEFAULT 0");
+  }
 
   // Unique constraint for vlan_plans (vlan + subnet)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vlan_plan_unique ON vlan_plans(vlan, subnet);`);
@@ -219,7 +238,7 @@ function initDatabase() {
   const existingPlans = db.prepare('SELECT COUNT(*) as cnt FROM vlan_plans').get();
   if (existingPlans.cnt === 0) {
   const vlanPlans = [
-    ['10','10.10.10.0/24','清云宗内网','255.255.255.0','10.10.10.1','清云宗核心网络',null,1],
+    ['10','10.10.10.0/24','清云宗内��','255.255.255.0','10.10.10.1','清云宗核心网络',null,1],
     ['20','172.20.20.0/24','天剑宗内网','255.255.255.0','172.20.20.1','天剑宗核心网络',null,2],
     ['30','192.168.30.0/24','魔界内网','255.255.255.0','192.168.30.1','魔界核心网络',null,3],
     ['99','10.99.99.0/24','公共网段','255.255.255.0','10.99.99.1','三宗共用公共网段','可用池 .10–.200',4],
@@ -239,8 +258,8 @@ function initDatabase() {
   prefixGateways.forEach(g => pgStmt.run(g[0], g[1], g[2]));
 
   // --- Seed: system settings ---
-  const ssStmt = db.prepare('INSERT INTO system_settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-  ssStmt.run('site_name', '网图·IP管家');
+  const ssStmt = db.prepare('INSERT OR IGNORE INTO system_settings (key, value) VALUES (?,?)');
+  ssStmt.run('site_name', DEFAULT_SITE_NAME);
 
   db.close();
   console.log('Database initialized successfully at:', DB_PATH);

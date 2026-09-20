@@ -2,17 +2,18 @@ const express = require('express');
 const router = express.Router();
 const userService = require('../services/userService');
 const dictService = require('../services/dictService');
+const { DEFAULT_SITE_NAME } = require('../config/site');
 
 const loginAttempts = new Map();
 
 router.get('/login', (req, res) => {
   if (req.session.user) return res.redirect('/');
-  res.render('pages/login', { layout: false, siteName: dictService.getSetting('site_name', '网图·IP管家'), error: null, user: null });
+  res.render('pages/login', { layout: false, siteName: dictService.getSetting('site_name', DEFAULT_SITE_NAME), error: null, user: null });
 });
 
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
-  const siteName = dictService.getSetting('site_name', '网图·IP管家');
+  const siteName = dictService.getSetting('site_name', DEFAULT_SITE_NAME);
 
   const key = req.ip;
   const attempts = loginAttempts.get(key) || { count: 0, last: 0 };

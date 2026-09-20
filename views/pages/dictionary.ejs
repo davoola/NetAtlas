@@ -50,7 +50,7 @@
   <div class="dict-panel" id="panel-vlan-plans">
     <button class="btn btn-primary" id="btnAddVlan">+ 新增VLAN规划</button>
     <div class="table-wrap">
-      <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>说明</th><th>可用地址</th><th>排序</th><th>操作</th></tr></thead>
+      <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>说明</th><th>可用地址</th><th>动态池</th><th>排序</th><th>操作</th></tr></thead>
       <tbody id="dictVlanPlans"></tbody></table>
     </div>
   </div>
@@ -72,6 +72,21 @@
         <input type="text" id="settingSiteName" placeholder="网站名称">
         <button class="btn btn-primary" id="btnSaveSiteName">保存</button>
       </div>
+      <div class="form-group">
+        <label>审计日志维护</label>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="date" id="auditCleanupBeforeDate" aria-label="清理截止日期">
+          <button class="btn btn-secondary" id="btnCleanupAuditLogs">清理截止日期之前的日志</button>
+        </div>
+        <p style="color:var(--neutral-400);font-size:12px;margin-top:4px">仅超级管理员可用，操作会保留一条清理记录。</p>
+      </div>
+      <div class="form-group">
+        <label>数据库维护</label>
+        <button class="btn btn-secondary" id="btnCheckpoint">立即写入主数据库文件</button>
+        <p style="color:var(--neutral-400);font-size:12px;margin-top:4px">
+          正常情况下系统会自动合并，此按钮用于备份前手动确保数据已完全写入 ipam.db
+        </p>
+      </div>
     </div>
   </div>
 </div>
@@ -91,6 +106,9 @@
         <div class="form-group"><label>排序</label><input type="number" id="vp_sort_order" value="0"></div>
         <div class="form-group full"><label>说明</label><input type="text" id="vp_description"></div>
         <div class="form-group full"><label>可用地址说明</label><input type="text" id="vp_address_pool_note"></div>
+        <div class="form-group full form-checkbox">
+          <label for="vp_is_dynamic"><input type="checkbox" id="vp_is_dynamic"> 动态IP池（DHCP，不强制登记IP地址）</label>
+        </div>
       </form>
     </div>
     <div class="modal-footer">
