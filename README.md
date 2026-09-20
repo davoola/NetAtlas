@@ -42,6 +42,8 @@ npm install
 npm run init-db
 ```
 
+
+
 数据库文件 `db/ipam.db` 会自动创建，并写入预置数据：
 - 默认超级管理员（admin / admin123）
 - VLAN 规划（10/20/30/99，对应清云宗/天剑宗/魔界/公共网段）
@@ -52,6 +54,10 @@ npm run init-db
 - 系统配置（网站名称：网图·IP管家）
 
 ### 3. 启动服务
+
+```
+echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
+```
 
 ```bash
 npm start
@@ -232,6 +238,7 @@ npm run dev
 ```bash
 npm install
 npm run init-db
+echo "SESSION_SECRET=$(openssl rand -hex 32)" >> .env
 npm start
 ```
 
