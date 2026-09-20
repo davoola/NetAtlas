@@ -58,12 +58,19 @@ function getDuplicateIpSet() {
   return new Set(rows.map(r => r.ip));
 }
 
+function normalizeMac(mac) {
+  return String(mac || '').trim().toLowerCase();
+}
+
 function getMacConflictMacSet() {
   const rows = db.prepare(`
-    SELECT mac FROM ip_records WHERE mac IS NOT NULL AND mac != ''
-    GROUP BY mac HAVING COUNT(DISTINCT ip) > 1
+    SELECT lower(trim(mac)) AS normalized_mac
+    FROM ip_records
+    WHERE mac IS NOT NULL AND trim(mac) != ''
+    GROUP BY lower(trim(mac))
+    HAVING COUNT(*) > 1
   `).all();
-  return new Set(rows.map(r => r.mac));
+  return new Set(rows.map(r => r.normalized_mac));
 }
 
 function listRecords({ page = 1, perPage = 20, search = '', vlan = '', department = '', status = '', deviceType = '', sort = 'updated_at', order = 'desc', scope = null, onlyDuplicate = '', onlyMacConflict = '' }) {
@@ -78,12 +85,8 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   if (vlan) {
     const planMatch = String(vlan).match(/^plan:(\d+)$/);
     if (planMatch) {
-      const plan = db.prepare('SELECT vlan, subnet FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
-      if (plan) {
-        where.push('vlan = ?'); params.push(plan.vlan);
-        const parsed = plan.subnet ? parseCidr(plan.subnet) : null;
-        if (parsed) { where.push('ip_sort >= ? AND ip_sort <= ?'); params.push(parsed.network, parsed.broadcast); }
-      }
+      const plan = db.prepare('SELECT vlan FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
+      if (plan) { where.push('vlan = ?'); params.push(plan.vlan); }
     } else {
       where.push('vlan = ?'); params.push(vlan);
     }
@@ -116,14 +119,14 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
       where.push('1 = 0');
     } else {
       const placeholders = conflictMacs.map(() => '?').join(',');
-      where.push(`mac IN (${placeholders})`);
+      where.push(`lower(trim(mac)) IN (${placeholders})`);
       params.push(...conflictMacs);
     }
   }
 
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-  const validSorts = ['ip','device_name','user_name','updated_at','registered_at','vlan','status','department','device_type'];
+  const validSorts = ['ip','mac','device_name','user_name','updated_at','registered_at','vlan','status','department','device_type'];
   let sortCol = validSorts.includes(sort) ? sort : 'updated_at';
   if (sortCol === 'ip') sortCol = 'ip_sort';
   const sortDir = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -137,7 +140,7 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
 
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(r.mac); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
 
   return { rows, total, page, perPage, totalPages: Math.ceil(total / perPage) };
 }
@@ -211,16 +214,34 @@ function validateIpForVlan(ip, vlanToken) {
   return null;
 }
 
-function createRecord(data) {
-  if (!data.ip || !String(data.ip).trim()) {
-    throw new Error('IP地址为必填项');
+function isDynamicVlanToken(vlanToken) {
+  if (!vlanToken) return false;
+  const plan = getPlanForVlanToken(vlanToken);
+  if (plan) return !!plan.is_dynamic;
+  const resolved = resolveVlanToken(vlanToken);
+  if (resolved) {
+    const p = db.prepare('SELECT is_dynamic FROM vlan_plans WHERE vlan = ? LIMIT 1').get(resolved);
+    return p ? !!p.is_dynamic : false;
   }
-  if (data.ip && !isValidIp(data.ip)) {
+  return false;
+}
+
+function createRecord(data) {
+  const isDynamic = isDynamicVlanToken(data.vlan);
+  if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
+  if (!isDynamic) {
+    if (!data.ip || !String(data.ip).trim()) {
+      throw new Error('IP地址为必填项');
+    }
+    if (data.ip && !isValidIp(data.ip)) {
+      throw new Error('IP地址格式不合法');
+    }
+  } else if (data.ip && !isValidIp(data.ip)) {
     throw new Error('IP地址格式不合法');
   }
-  const gateway = data.gateway || lookupGateway(data.ip);
-  const vlan = resolveVlanToken(data.vlan) || lookupVlanByIp(data.ip);
-  const ipSort = ipToInt(data.ip);
+  const gateway = data.gateway || (data.ip ? lookupGateway(data.ip) : null);
+  const vlan = resolveVlanToken(data.vlan) || (data.ip ? lookupVlanByIp(data.ip) : null);
+  const ipSort = data.ip ? ipToInt(data.ip) : null;
   db.prepare(`
     INSERT INTO ip_records (vlan, ip, ip_sort, mac, device_type, device_name, location, department, user_name, remark, status, registered_at, upper_switch, switch_port, sunlogin_id, gateway)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -237,16 +258,23 @@ function createRecord(data) {
 
 function updateRecord(id, data) {
   const existing = getRecord(id);
+  if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
   if (!existing) return null;
-  if (!data.ip || !String(data.ip).trim()) {
-    throw new Error('IP地址为必填项');
-  }
-  if (data.ip && !isValidIp(data.ip)) {
+  const isDynamic = isDynamicVlanToken(data.vlan || existing.vlan);
+  if (!isDynamic) {
+    if (!data.ip || !String(data.ip).trim()) {
+      throw new Error('IP地址为必填项');
+    }
+    if (data.ip && !isValidIp(data.ip)) {
+      throw new Error('IP地址格式不合法');
+    }
+  } else if (data.ip && !isValidIp(data.ip)) {
     throw new Error('IP地址格式不合法');
   }
-  const gateway = data.gateway !== undefined ? data.gateway : lookupGateway(data.ip);
+  const gateway = data.gateway !== undefined ? data.gateway : (data.ip ? lookupGateway(data.ip) : null);
   const vlan = resolveVlanToken(data.vlan) || existing.vlan;
-  const ipSort = ipToInt(data.ip || existing.ip);
+  const resolvedIp = data.ip || existing.ip || null;
+  const ipSort = resolvedIp ? ipToInt(resolvedIp) : null;
   db.prepare(`
     UPDATE ip_records SET
       vlan=?, ip=?, ip_sort=?, mac=?, device_type=?, device_name=?, location=?, department=?, user_name=?, remark=?, status=?, registered_at=?, upper_switch=?, switch_port=?, sunlogin_id=?, gateway=?, updated_at=datetime('now','localtime')
@@ -274,7 +302,7 @@ function getDashboardStats() {
   const withMac = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE mac IS NOT NULL AND mac != ''").get().cnt;
   const withSunlogin = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE sunlogin_id IS NOT NULL AND sunlogin_id != ''").get().cnt;
   const dupIps = db.prepare("SELECT COUNT(*) as cnt FROM (SELECT ip FROM ip_records WHERE ip IS NOT NULL AND ip != '' GROUP BY ip HAVING COUNT(*) > 1)").get().cnt;
-  const macConflictIps = db.prepare("SELECT COUNT(*) as cnt FROM (SELECT mac FROM ip_records WHERE mac IS NOT NULL AND mac != '' GROUP BY mac HAVING COUNT(DISTINCT ip) > 1)").get().cnt;
+  const macConflictIps = db.prepare("SELECT COUNT(*) as cnt FROM (SELECT lower(trim(mac)) AS mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != '' GROUP BY lower(trim(mac)) HAVING COUNT(*) > 1)").get().cnt;
   const activeVlans = db.prepare("SELECT COUNT(DISTINCT vlan) as cnt FROM ip_records WHERE vlan IS NOT NULL AND vlan != ''").get().cnt;
 
   return { total, used, reserved, deprecated, withMac, withSunlogin, dupIps, macConflictIps, activeVlans };
@@ -328,7 +356,7 @@ function getDeviceTypeStats() {
   return rows.map(r => ({ ...r, percentage: total > 0 ? ((r.cnt / total) * 100).toFixed(1) : 0 }));
 }
 
-function getSubnetRecords(prefix, sort = 'ip', order = 'asc') {
+function getSubnetRecords(prefix, sort = 'ip', order = 'asc', vlan = null) {
   const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
@@ -339,30 +367,55 @@ function getSubnetRecords(prefix, sort = 'ip', order = 'asc') {
     const baseInt = ipToInt(prefixParts.join('.') + '.0');
     if (baseInt !== null) {
       const bcastInt = (baseInt | 0x000000FF) >>> 0;
-      rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(baseInt, bcastInt);
+      if (vlan) {
+        rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? AND ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(vlan, baseInt, bcastInt);
+      } else {
+        rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(baseInt, bcastInt);
+      }
     } else {
       rows = [];
     }
   } else {
-    rows = db.prepare(`SELECT * FROM ip_records WHERE ip LIKE ? ORDER BY ${sortCol} ${sortDir}`).all(`${prefix}.%`);
+    if (vlan) {
+      rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? AND ip LIKE ? ORDER BY ${sortCol} ${sortDir}`).all(vlan, `${prefix}.%`);
+    } else {
+      rows = db.prepare(`SELECT * FROM ip_records WHERE ip LIKE ? ORDER BY ${sortCol} ${sortDir}`).all(`${prefix}.%`);
+    }
   }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(r.mac); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
   return rows;
 }
 
-function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc') {
+function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc', vlan = null) {
   const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
   const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   const parsed = parseCidr(cidr);
   if (!parsed) return [];
-  const rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(parsed.network, parsed.broadcast);
+  let rows;
+  if (vlan) {
+    rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? AND ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(vlan, parsed.network, parsed.broadcast);
+  } else {
+    rows = db.prepare(`SELECT * FROM ip_records WHERE ip_sort >= ? AND ip_sort <= ? ORDER BY ${sortCol} ${sortDir}`).all(parsed.network, parsed.broadcast);
+  }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(r.mac); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
+  return rows;
+}
+
+function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
+  const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
+  let sortCol = validSorts.includes(sort) ? sort : 'ip';
+  if (sortCol === 'ip') sortCol = 'ip_sort';
+  const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
+  const rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? ORDER BY ${sortCol} ${sortDir}`).all(vlan);
+  const dupSet = getDuplicateIpSet();
+  const macConflictSet = getMacConflictMacSet();
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
   return rows;
 }
 
@@ -370,5 +423,5 @@ module.exports = {
   lookupGateway, lookupVlanByIp, getDuplicateIpSet, getMacConflictMacSet, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
-  getSubnetRecords, getSubnetRecordsByCidr,
+  getSubnetRecords, getSubnetRecordsByCidr, getVlanRecords,
 };

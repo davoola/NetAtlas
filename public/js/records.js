@@ -111,6 +111,16 @@ function updateSortIndicators() {
   });
 }
 
+function formatDisplayDate(value) {
+  if (!value) return '-';
+  const text = String(value).trim();
+  const match = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (match) return `${match[1]}/${Number(match[2])}/${Number(match[3])}`;
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) return `${parsed.getFullYear()}/${parsed.getMonth() + 1}/${parsed.getDate()}`;
+  return text;
+}
+
 function renderRecords(data) {
   updateSortIndicators();
   const tbody = document.getElementById('recordsBody');
@@ -180,7 +190,7 @@ async function viewRecord(id) {
       ['ID', r.id], ['IP地址', r.ip], ['VLAN', r.vlan], ['MAC地址', r.mac],
       ['设备类型', r.device_type], ['设备名称', r.device_name], ['物理位置', r.location],
       ['所属部门', r.department], ['使用人', r.user_name], ['使用状态', r.status],
-      ['登记日期', r.registered_at], ['上层交换机', r.upper_switch],
+      ['登记日期', formatDisplayDate(r.registered_at)], ['上层交换机', r.upper_switch],
       ['交换机端口', r.switch_port], ['向日葵ID', r.sunlogin_id],
       ['网关', r.gateway], ['备注', r.remark], ['更新日期', r.updated_at],
     ];
@@ -248,10 +258,18 @@ async function saveRecord() {
   const vlanToken = document.getElementById('f_vlan').value;
   const ip = document.getElementById('f_ip').value.trim();
 
-  if (!ip) return showToast('IP地址不能为空', 'error');
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return showToast('IP地址格式不正确', 'error');
+  // Check if selected VLAN is a dynamic (DHCP) pool — IP is optional for those
+  const selectedPlan = vlanToken ? (() => { const m = String(vlanToken).match(/^plan:(\d+)$/); return m ? dictionaries.vlanPlans.find(p => p.id === Number(m[1])) : null; })() : null;
+  const isDynamicVlan = selectedPlan && selectedPlan.is_dynamic;
 
-  // Validate IP matches VLAN subnet using CIDR
+  if (!isDynamicVlan) {
+    if (!ip) return showToast('IP地址不能为空', 'error');
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return showToast('IP地址格式不正确', 'error');
+  } else if (ip && !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+    return showToast('IP地址格式不正确', 'error');
+  }
+
+  // Validate IP matches VLAN subnet using CIDR (only when IP provided and subnet defined)
   if (vlanToken && ip) {
     const vlanSubnet = getVlanSubnet(vlanToken);
     if (vlanSubnet && !ipInCidrJS(ip, vlanSubnet)) {
@@ -389,7 +407,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // Filter checkbox for MAC conflict IPs only
   const macCheckbox = document.getElementById('filterMacConflictOnly');
   if (macCheckbox) {
-    macCheckbox.addEventListener('change', () => { currentPage = 1; loadRecords(); });
+    macCheckbox.addEventListener('change', function() {
+      if (this.checked) { currentSort = 'mac'; currentOrder = 'asc'; }
+      currentPage = 1;
+      loadRecords();
+      updateSortIndicators();
+    });
   }
 
   // Modal close buttons

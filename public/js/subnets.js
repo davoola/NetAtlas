@@ -14,25 +14,36 @@ async function loadSubnetOptions() {
     const allowedTokens = permData.all ? null : new Set(permData.vlans);
     const firstPrefix = [];
     plans.forEach(p => {
+      const token = `plan:${p.id}`;
+      const allowed = !allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan);
+      if (!allowed) return;
+
       if (p.subnet) {
         const cidrParts = p.subnet.split('/');
         const prefixLen = cidrParts.length === 2 ? parseInt(cidrParts[1], 10) : 24;
         const prefix = cidrParts[0].split('.').slice(0, 3).join('.');
-        const token = `plan:${p.id}`;
         if (prefixLen < 24) {
-          // Large subnet: use plan:CIDR token instead of 3-octet prefix
+          // Large subnet: use plan:CIDR token
           const cidrValue = `plan:${p.subnet}`;
-          if (!seen.has(cidrValue) && (!allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan))) {
+          if (!seen.has(cidrValue)) {
             seen.add(cidrValue);
             select.add(new Option(`${p.subnet} (${p.vlan} - ${p.name || ''})`, cidrValue));
             firstPrefix.push(cidrValue);
           }
         } else {
-          if (!seen.has(prefix) && (!allowedTokens || allowedTokens.has(token) || allowedTokens.has(p.vlan))) {
+          if (!seen.has(prefix)) {
             seen.add(prefix);
             select.add(new Option(`${prefix} (${p.vlan} - ${p.name || ''})`, prefix));
             firstPrefix.push(prefix);
           }
+        }
+      } else if (p.is_dynamic) {
+        // Dynamic VLAN with no subnet: use plan:<id> token
+        const dynValue = `plan:${p.id}`;
+        if (!seen.has(dynValue)) {
+          seen.add(dynValue);
+          select.add(new Option(`${p.vlan} - ${p.name || '动态IP池'} (动态/DHCP)`, dynValue));
+          firstPrefix.push(dynValue);
         }
       }
     });
@@ -78,7 +89,11 @@ async function viewSubnet() {
   const prefix = document.getElementById('subnetSelect').value;
   if (!prefix) { showToast('请选择网段', 'error'); return; }
   currentPrefix = prefix;
-  const isLargeSubnet = prefix.startsWith('plan:');
+
+  // Large subnet (CIDR) or plan-id token (dynamic VLAN with no subnet)
+  const isLargeSubnet = prefix.startsWith('plan:') && prefix.slice(5).includes('/');
+  const isDynamicPlanToken = prefix.startsWith('plan:') && !prefix.slice(5).includes('/');
+
   try {
     const params = new URLSearchParams({ sort: subnetSort, order: subnetOrder });
     const data = await api('/api/subnet/' + encodeURIComponent(prefix) + '?' + params);
@@ -96,6 +111,11 @@ async function viewSubnet() {
         (vlan ? ` | VLAN: <strong style="color:var(--primary)">${escapeHtml(vlan)}</strong>` : '') +
         (plan && plan.mask ? ` | 掩码: ${escapeHtml(plan.mask)}` : '') +
         ` <span style="color:var(--neutral-400);font-size:12px;margin-left:8px">（大子网模式，不计算剩余可用）</span>`;
+    } else if (isDynamicPlanToken) {
+      subnetInfo = `动态IP池 <strong style="color:var(--primary)">${escapeHtml(vlan || '')}</strong>` +
+        (plan && plan.name ? ` - ${escapeHtml(plan.name)}` : '') +
+        ` 共 <strong style="color:var(--primary)">${data.records.length}</strong> 条登记记录` +
+        ` <span style="color:var(--neutral-400);font-size:12px;margin-left:8px">（动态IP池，不计算剩余可用）</span>`;
     } else {
       // Calculate available count using shared parsePoolRange, subtract gateway
       const pool = parsePoolRange(plan);
@@ -155,8 +175,8 @@ async function viewSubnet() {
       });
     }
 
-    // Idle host analysis: skip for large subnets
-    if (isLargeSubnet) {
+    // Idle host analysis: skip for large subnets and dynamic VLANs
+    if (isLargeSubnet || isDynamicPlanToken) {
       document.getElementById('idleSection').style.display = 'none';
     } else {
       const usedHosts = new Set();
@@ -181,7 +201,7 @@ async function viewSubnet() {
       }
     }
   } catch (e) {
-    showToast('加载DHCP网段明细失败: ' + e.message, 'error');
+    showToast('加载网段明细失败: ' + e.message, 'error');
   }
 }
 

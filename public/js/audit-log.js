@@ -27,6 +27,7 @@ const ACTION_LABELS = {
   update_permissions: '修改权限',
   change_password: '修改密码',
   update_setting: '修改系统配置',
+  cleanup_audit_logs: '清理审计日志',
 };
 
 const TARGET_LABELS = {

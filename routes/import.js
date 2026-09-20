@@ -71,23 +71,23 @@ function normalizeSunloginId(val) {
   return String(val).trim();
 }
 
-function validateDictValues(record, errors, rowIdx) {
-  if (record.device_type) {
-    const valid = db.prepare('SELECT 1 FROM dict_device_types WHERE name = ?').get(record.device_type);
-    if (!valid) errors.push(`第${rowIdx}行: 设备类型"${record.device_type}"不在字典中`);
+function normalizeRegisteredAt(val) {
+  if (val === null || val === undefined || val === '') return null;
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
   }
-  if (record.department) {
-    const valid = db.prepare('SELECT 1 FROM dict_departments WHERE name = ?').get(record.department);
-    if (!valid) errors.push(`第${rowIdx}行: 部门"${record.department}"不在字典中`);
+  if (typeof val === 'number' && Number.isFinite(val)) {
+    const date = new Date(Date.UTC(1899, 11, 30) + val * 86400000);
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
   }
-  if (record.status) {
-    const valid = db.prepare('SELECT 1 FROM dict_statuses WHERE name = ?').get(record.status);
-    if (!valid) {
-      record.status = normalizeStatus(record.status);
-      const valid2 = db.prepare('SELECT 1 FROM dict_statuses WHERE name = ?').get(record.status);
-      if (!valid2) errors.push(`第${rowIdx}行: 状态"${record.status}"不在字典中`);
-    }
-  }
+  const text = String(val).trim();
+  const parsed = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (parsed) return `${parsed[1]}-${parsed[2].padStart(2, '0')}-${parsed[3].padStart(2, '0')}`;
+  return text;
+}
+
+function getPlanByVlan(vlan) {
+  return db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? LIMIT 1').get(String(vlan));
 }
 
 function processRows(rows, req, strategy) {
@@ -104,26 +104,39 @@ function processRows(rows, req, strategy) {
     const record = {};
     for (const [key, val] of Object.entries(row)) {
       const field = FIELD_MAP[key.trim()];
-      if (field) record[field] = val !== null && val !== undefined ? String(val).trim() : '';
-    }
-
-    if (!record.ip) {
-      errors.push(`第${i + 2}行: IP地址为空，已跳过`);
-      skip++; continue;
-    }
-
-    if (!ipService.isValidIp(record.ip)) {
-      errors.push(`第${i + 2}行: IP地址格式不合法: ${record.ip}`);
-      skip++;
-      continue;
+      if (!field) continue;
+      // 保留 Excel 的 Date 对象，避免先转成英文日期字符串导致格式无法统一。
+      record[field] = val !== null && val !== undefined && !(val instanceof Date) ? String(val).trim() : val;
     }
 
     record.vlan = normalizeVlan(record.vlan);
     if (!record.vlan && record.ip) {
       record.vlan = ipService.lookupVlanByIp(record.ip);
     }
+
+    // Determine if this VLAN is a dynamic IP pool
+    const planForVlan = record.vlan ? getPlanByVlan(record.vlan) : null;
+    const isDynamic = planForVlan && planForVlan.is_dynamic;
+
+    if (!isDynamic) {
+      if (!record.ip) {
+        errors.push(`第${i + 2}行: IP地址为空，已跳过`);
+        skip++; continue;
+      }
+      if (!ipService.isValidIp(record.ip)) {
+        errors.push(`第${i + 2}行: IP地址格式不合法: ${record.ip}`);
+        skip++;
+        continue;
+      }
+    } else if (record.ip && !ipService.isValidIp(record.ip)) {
+      errors.push(`第${i + 2}行: IP地址格式不合法: ${record.ip}`);
+      skip++;
+      continue;
+    }
+
     record.status = normalizeStatus(record.status);
     record.sunlogin_id = normalizeSunloginId(record.sunlogin_id);
+    record.registered_at = normalizeRegisteredAt(record.registered_at);
 
     if (!record.vlan) {
       errors.push(`第${i + 2}行: 无法自动识别VLAN，且该VLAN不存在于字典中，请先至数据字典添加`);
@@ -157,14 +170,14 @@ function processRows(rows, req, strategy) {
     }
 
     try {
-      if (vlanToken) ipService.validateIpForVlan(record.ip, vlanToken);
+      if (vlanToken && record.ip) ipService.validateIpForVlan(record.ip, vlanToken);
     } catch (e) {
       errors.push(`第${i + 2}行: ${e.message}`);
       skip++;
       continue;
     }
 
-    const existing = db.prepare('SELECT id FROM ip_records WHERE ip = ?').get(record.ip);
+    const existing = record.ip ? db.prepare('SELECT id FROM ip_records WHERE ip = ?').get(record.ip) : null;
     if (existing) {
       if (strategy === 'skip') {
         errors.push(`第${i + 2}行: IP ${record.ip} 已存在，按"跳过"策略未导入`);
@@ -209,7 +222,7 @@ router.post('/excel', requireAuth, requireRole('superadmin', 'admin'), upload.si
   if (!req.file) return res.status(400).json({ error: '请选择文件' });
   const strategy = req.body.strategy || 'skip';
   try {
-    const wb = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const wb = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true });
     const sheetName = wb.SheetNames[0];
     const rows = xlsx.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
     const result = processRows(rows, req, strategy);

@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { requireAuth, requireRole } = require('../middleware/auth');
 const dictService = require('../services/dictService');
+const { DEFAULT_SITE_NAME } = require('../config/site');
 
 router.use((req, res, next) => {
-  res.locals.siteName = dictService.getSetting('site_name', '网图·IP管家');
+  res.locals.siteName = dictService.getSetting('site_name', DEFAULT_SITE_NAME);
   res.locals.user = req.session.user;
   next();
 });

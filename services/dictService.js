@@ -10,9 +10,14 @@ function addDeviceType(name, description) {
   return getDeviceTypes();
 }
 function updateDeviceType(id, data) {
-  db.prepare('UPDATE dict_device_types SET name=?, description=?, sort_order=? WHERE id=?').run(
-    data.name, data.description || null, data.sort_order !== undefined ? data.sort_order : 0, id
-  );
+  const old = db.prepare('SELECT name FROM dict_device_types WHERE id = ?').get(id);
+  if (!old) throw new Error('设备类型不存在');
+  db.transaction(() => {
+    db.prepare('UPDATE dict_device_types SET name=?, description=?, sort_order=? WHERE id=?').run(
+      data.name, data.description || null, data.sort_order !== undefined ? data.sort_order : 0, id
+    );
+    if (old.name !== data.name) db.prepare('UPDATE ip_records SET device_type=? WHERE device_type=?').run(data.name, old.name);
+  });
   return getDeviceTypes();
 }
 function deleteDeviceType(id) {
@@ -33,9 +38,14 @@ function addStatus(name, description) {
   return getStatuses();
 }
 function updateStatus(id, data) {
-  db.prepare('UPDATE dict_statuses SET name=?, description=?, sort_order=? WHERE id=?').run(
-    data.name, data.description || null, data.sort_order !== undefined ? data.sort_order : 0, id
-  );
+  const old = db.prepare('SELECT name FROM dict_statuses WHERE id = ?').get(id);
+  if (!old) throw new Error('使用状态不存在');
+  db.transaction(() => {
+    db.prepare('UPDATE dict_statuses SET name=?, description=?, sort_order=? WHERE id=?').run(
+      data.name, data.description || null, data.sort_order !== undefined ? data.sort_order : 0, id
+    );
+    if (old.name !== data.name) db.prepare('UPDATE ip_records SET status=? WHERE status=?').run(data.name, old.name);
+  });
   return getStatuses();
 }
 function deleteStatus(id) {
@@ -56,9 +66,14 @@ function addDepartment(name) {
   return getDepartments();
 }
 function updateDepartment(id, data) {
-  db.prepare('UPDATE dict_departments SET name=?, sort_order=? WHERE id=?').run(
-    data.name, data.sort_order !== undefined ? data.sort_order : 0, id
-  );
+  const old = db.prepare('SELECT name FROM dict_departments WHERE id = ?').get(id);
+  if (!old) throw new Error('部门不存在');
+  db.transaction(() => {
+    db.prepare('UPDATE dict_departments SET name=?, sort_order=? WHERE id=?').run(
+      data.name, data.sort_order !== undefined ? data.sort_order : 0, id
+    );
+    if (old.name !== data.name) db.prepare('UPDATE ip_records SET department=? WHERE department=?').run(data.name, old.name);
+  });
   return getDepartments();
 }
 function deleteDepartment(id) {
@@ -77,15 +92,17 @@ function getVlanPlanById(id) {
 }
 function addVlanPlan(data) {
   if (!data.vlan || !String(data.vlan).trim()) throw new Error('VLAN编号为必填项');
-  if (!data.subnet || !String(data.subnet).trim()) throw new Error('网段为必填项');
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
+  const isDynamic = data.is_dynamic ? 1 : 0;
+  const hasSubnet = data.subnet && String(data.subnet).trim();
+  if (!isDynamic && !hasSubnet) throw new Error('网段为必填项');
+  if (hasSubnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
   if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new Error('网关IP格式不正确');
   try {
-    db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order)
-      VALUES (?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order, is_dynamic)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
       data.vlan, data.name || null, data.subnet || null, data.mask || null,
       data.gateway || null, data.description || null, data.address_pool_note || null,
-      data.sort_order || 0
+      data.sort_order || 0, isDynamic
     );
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) throw new Error('该VLAN在此网段下的规划已存在');
@@ -94,24 +111,36 @@ function addVlanPlan(data) {
   return getVlanPlans();
 }
 function updateVlanPlan(id, data) {
+  const old = db.prepare('SELECT vlan FROM vlan_plans WHERE id = ?').get(id);
+  if (!old) throw new Error('VLAN规划不存在');
   if (!data.vlan || !String(data.vlan).trim()) throw new Error('VLAN编号为必填项');
-  if (!data.subnet || !String(data.subnet).trim()) throw new Error('网段为必填项');
-  if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
+  const isDynamic = data.is_dynamic ? 1 : 0;
+  const hasSubnet = data.subnet && String(data.subnet).trim();
+  if (!isDynamic && !hasSubnet) throw new Error('网段为必填项');
+  if (hasSubnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
   if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new Error('网关IP格式不正确');
-  db.prepare(`UPDATE vlan_plans SET vlan=?, name=?, subnet=?, mask=?, gateway=?, description=?, address_pool_note=?, sort_order=? WHERE id=?`).run(
-    data.vlan, data.name || null, data.subnet || null, data.mask || null,
-    data.gateway || null, data.description || null, data.address_pool_note || null,
-    data.sort_order || 0, id
-  );
+  db.transaction(() => {
+    db.prepare(`UPDATE vlan_plans SET vlan=?, name=?, subnet=?, mask=?, gateway=?, description=?, address_pool_note=?, sort_order=?, is_dynamic=? WHERE id=?`).run(
+      data.vlan, data.name || null, data.subnet || null, data.mask || null,
+      data.gateway || null, data.description || null, data.address_pool_note || null,
+      data.sort_order || 0, isDynamic, id
+    );
+    if (old.vlan !== data.vlan) db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=?').run(data.vlan, old.vlan);
+  });
   return getVlanPlans();
 }
 function deleteVlanPlan(id) {
   const plan = db.prepare('SELECT vlan, subnet FROM vlan_plans WHERE id = ?').get(id);
   if (!plan) throw new Error('VLAN规划不存在');
-  const prefix = plan.subnet ? plan.subnet.split('/')[0].split('.').slice(0, 3).join('.') : '';
   let count;
-  if (prefix) {
-    count = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip LIKE ?').get(plan.vlan, `${prefix}.%`).cnt;
+  if (plan.subnet) {
+    const ipService = require('./ipService');
+    const parsed = ipService.parseCidr(plan.subnet);
+    if (parsed) {
+      count = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort >= ? AND ip_sort <= ?').get(plan.vlan, parsed.network, parsed.broadcast).cnt;
+    } else {
+      count = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ?').get(plan.vlan).cnt;
+    }
   } else {
     count = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ?').get(plan.vlan).cnt;
   }
@@ -154,6 +183,15 @@ function getSetting(key, defaultVal) {
 function setSetting(key, value) {
   db.prepare('INSERT INTO system_settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = ?').run(key, value, value);
 }
+function checkpointDatabase() {
+  db.pragma('wal_checkpoint(TRUNCATE)');
+  return { message: '数据库已成功写入主文件' };
+}
+
+function cleanupAuditLogs(beforeDate) {
+  const result = db.prepare("DELETE FROM audit_log WHERE created_at < datetime(?, 'start of day')").run(beforeDate);
+  return result.changes;
+}
 
 function auditLog(user, action, detail, opts = {}) {
   db.prepare('INSERT INTO audit_log (user_id, username, action, detail, target_type, target_id, ip_address) VALUES (?,?,?,?,?,?,?)').run(
@@ -168,5 +206,5 @@ module.exports = {
   getDepartments, addDepartment, updateDepartment, deleteDepartment,
   getVlanPlans, getVlanPlanById, addVlanPlan, updateVlanPlan, deleteVlanPlan,
   getPrefixGateways, addPrefixGateway, updatePrefixGateway, deletePrefixGateway,
-  getSetting, setSetting, auditLog,
+  getSetting, setSetting, checkpointDatabase, cleanupAuditLogs, auditLog,
 };
