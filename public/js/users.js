@@ -113,6 +113,7 @@ async function saveUser() {
       const username = document.getElementById('u_username').value;
       const password = document.getElementById('u_password').value;
       if (!username || !password) return showToast('用户名和密码必填', 'error');
+      if (password.length < 8) return showToast('密码至少8位', 'error');
       const result = await api('/api/users', { method: 'POST', body: JSON.stringify({ username, password, role, display_name: data.display_name }) });
       if (role === 'admin') {
         const vlans = Array.from(document.querySelectorAll('#permVlanList input:checked')).map(c => c.value);
@@ -128,7 +129,7 @@ async function saveUser() {
 async function doResetPassword() {
   const id = document.getElementById('resetUserId').value;
   const password = document.getElementById('resetPassword').value;
-  if (!password || password.length < 6) return showToast('密码至少6位', 'error');
+  if (!password || password.length < 8) return showToast('密码至少8位', 'error');
   try {
     await api(`/api/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ password }) });
     showToast('重置成功', 'success');

@@ -1,9 +1,12 @@
+try { process.loadEnvFile(); } catch (e) { /* .env 不存在时忽略 */ }
 const Database = require('./wrapper');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const crypto = require('crypto');
+const { PASSWORD_MIN_LENGTH, PASSWORD_MAX_LENGTH } = require('../config/password');
 const { DEFAULT_SITE_NAME } = require('../config/site');
 
-const DB_PATH = path.join(__dirname, 'ipam.db');
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'ipam.db');
 
 function initDatabase() {
   const db = new Database(DB_PATH);
@@ -19,6 +22,7 @@ function initDatabase() {
       role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('superadmin','admin','viewer')),
       display_name TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      must_change_password INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
@@ -200,11 +204,36 @@ function initDatabase() {
     db.exec("ALTER TABLE audit_log ADD COLUMN ip_address TEXT");
   }
 
-  // --- Seed: default superadmin ---
+  // Migration: users.must_change_password (safe for existing DBs)
+  try {
+    db.prepare('SELECT must_change_password FROM users LIMIT 1').get();
+  } catch (e) {
+    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+  }
+
+  // --- Seed: initial superadmin (no fixed default password) ---
+  let generatedPassword = null;
   const existing = db.prepare('SELECT COUNT(*) as cnt FROM users').get();
   if (existing.cnt === 0) {
-    const hash = bcrypt.hashSync('admin123', 10);
-    db.prepare(`INSERT INTO users (username, password_hash, role, display_name) VALUES (?,?,?,?)`).run('admin', hash, 'superadmin', '超级管理员');
+    const envPassword = process.env.ADMIN_INITIAL_PASSWORD;
+    let password;
+    let mustChange = 0;
+    if (envPassword) {
+      if (envPassword.length < PASSWORD_MIN_LENGTH || envPassword.length > PASSWORD_MAX_LENGTH || envPassword === 'admin123') {
+        console.error(`错误: ADMIN_INITIAL_PASSWORD 长度必须为 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 位，且不能是 admin123 等已知弱口令。init-db 已中止。`);
+        db.close();
+        process.exit(1);
+      }
+      password = envPassword;
+    } else {
+      // 随机一次性初始密码，首次登录强制修改
+      const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+      password = Array.from(crypto.randomBytes(16), b => alphabet[b % alphabet.length]).join('');
+      generatedPassword = password;
+      mustChange = 1;
+    }
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare(`INSERT INTO users (username, password_hash, role, display_name, must_change_password) VALUES (?,?,?,?,?)`).run('admin', hash, 'superadmin', '超级管理员', mustChange);
   }
 
   // --- Seed: system settings ---
@@ -213,7 +242,12 @@ function initDatabase() {
 
   db.close();
   console.log('Database initialized successfully at:', DB_PATH);
-  console.log('Default admin: username=admin, password=admin123');
+  if (generatedPassword) {
+    console.log('已创建初始超级管理员：username=admin');
+    console.log('一次性初始密码（仅显示这一次，请立即记录；首次登录将强制修改）：' + generatedPassword);
+  } else if (existing.cnt === 0) {
+    console.log('已使用 ADMIN_INITIAL_PASSWORD 创建初始超级管理员：username=admin');
+  }
   console.log('Note: dictionary / VLAN / gateway tables are empty — configure them in the UI.');
 }
 

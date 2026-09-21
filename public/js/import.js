@@ -8,6 +8,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('strategy', document.getElementById('importStrategy').value);
+    const atomicEl = document.getElementById('importAtomic');
+    if (atomicEl && atomicEl.checked) formData.append('atomic', '1');
 
     const url = type === 'excel' ? '/api/import/excel' : '/api/import/csv';
     const btn = document.getElementById('btnImport');
@@ -16,13 +18,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('importResult').style.display = 'none';
 
     try {
-      const res = await fetch(url, { method: 'POST', body: formData });
+      const res = await fetch(url, { method: 'POST', body: formData, headers: { 'X-CSRF-Token': csrfToken() } });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || '导入失败');
 
       document.getElementById('importResult').style.display = '';
       const content = document.getElementById('importResultContent');
-      let html = '<div class="import-result-success">导入完成</div>';
+      let html = data.rolledBack
+        ? '<div class="import-result-error">严格模式：存在被跳过的行，本次导入已整体回滚，未写入任何数据</div>'
+        : '<div class="import-result-success">导入完成</div>';
       html += '<div style="margin-top:8px;display:flex;gap:16px;flex-wrap:wrap">';
       html += `<span style="color:var(--success)">成功新增: ${data.success} 条</span>`;
       if (data.updated > 0) html += `<span style="color:var(--primary)">更新: ${data.updated} 条</span>`;
@@ -40,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
         html += '</div>';
       }
       content.innerHTML = html;
-      showToast('导入完成', 'success');
+      showToast(data.rolledBack ? '导入已回滚' : '导入完成', data.rolledBack ? 'error' : 'success');
     } catch (e) {
       showToast('导入失败: ' + e.message, 'error');
     } finally {

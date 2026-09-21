@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const xlsx = require('xlsx');
-const { parse } = require('csv-parse');
+const crypto = require('crypto');
+const { parseImportFile } = require('../services/fileParser');
+const { UserError, publicMessage, logError } = require('../utils/errors');
 const { requireAuth, requireRole, canManageVlan } = require('../middleware/auth');
 const ipService = require('../services/ipService');
 const dictService = require('../services/dictService');
@@ -28,6 +29,19 @@ const upload = multer({
     }
   },
 });
+
+const uploadSingle = upload.single('file');
+function handleUpload(req, res, next) {
+  uploadSingle(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') return res.status(400).json({ error: '文件超过 10MB 限制' });
+    if (err.name === 'MulterError') return res.status(400).json({ error: '文件上传失败' });
+    return res.status(400).json({ error: publicMessage(err, '文件上传失败') });
+  });
+}
+
+// 同一时间仅允许一个导入任务，避免并发大导入长时间占用同步数据库。
+let importing = false;
 
 const FIELD_MAP = {
   'VLAN': 'vlan', 'vlan': 'vlan',
@@ -90,8 +104,43 @@ function getPlanByVlan(vlan) {
   return db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? LIMIT 1').get(String(vlan));
 }
 
-function processRows(rows, req, strategy) {
-  const user = req.session.user;
+class ImportRollback extends Error {
+  constructor(result) { super('import rolled back'); this.result = result; }
+}
+
+function processRows(rows, req, strategy, atomic = false) {
+  const batchId = crypto.randomBytes(4).toString('hex');
+  let result;
+  try {
+    // 整批导入放入同一事务：中途异常整体回滚；严格模式下只要有被跳过的行就整体回滚
+    result = db.transaction(() => {
+      const r = processRowsInner(rows, req, strategy, batchId);
+      if (atomic && r.skip > 0) throw new ImportRollback(r);
+      return r;
+    });
+  } catch (e) {
+    if (e instanceof ImportRollback) {
+      const r = e.result;
+      dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId} 严格模式已整体回滚；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}，跳过${r.skip}条，错误/警告${r.totalErrors}条`, { target_type: 'import' });
+      return { success: 0, updated: 0, skip: r.skip, errors: r.errors, totalErrors: r.totalErrors, rolledBack: true, batchId };
+    }
+    throw e;
+  }
+  const errSummary = result.allErrors.slice(0, 10).join('；').slice(0, 1500);
+  dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId}；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}；成功${result.success}条，更新${result.updated}条，跳过${result.skip}条${result.totalErrors > 0 ? `，错误/警告${result.totalErrors}条（前10条：${errSummary}）` : ''}`, { target_type: 'import' });
+  delete result.allErrors;
+  return { ...result, batchId };
+}
+
+function getFileSha256(req) {
+  return req.file ? crypto.createHash('sha256').update(req.file.buffer).digest('hex') : '';
+}
+
+function getFileName(req) {
+  return req.file ? Buffer.from(req.file.originalname, 'latin1').toString('utf8').slice(0, 200) : '未知';
+}
+
+function processRowsInner(rows, req, strategy) {
   let success = 0, skip = 0, updated = 0;
   const errors = [];
   const validDeviceTypes = new Set(db.prepare('SELECT name FROM dict_device_types').all().map(r => r.name));
@@ -103,8 +152,9 @@ function processRows(rows, req, strategy) {
     const row = rows[i];
     const record = {};
     for (const [key, val] of Object.entries(row)) {
-      const field = FIELD_MAP[key.trim()];
-      if (!field) continue;
+      const trimmedKey = key.trim();
+      if (!Object.prototype.hasOwnProperty.call(FIELD_MAP, trimmedKey)) continue;
+      const field = FIELD_MAP[trimmedKey];
       // 保留 Excel 的 Date 对象，避免先转成英文日期字符串导致格式无法统一。
       record[field] = val !== null && val !== undefined && !(val instanceof Date) ? String(val).trim() : val;
     }
@@ -177,13 +227,19 @@ function processRows(rows, req, strategy) {
       continue;
     }
 
-    const existing = record.ip ? db.prepare('SELECT id FROM ip_records WHERE ip = ?').get(record.ip) : null;
+    const existing = record.ip ? db.prepare('SELECT id, vlan FROM ip_records WHERE ip = ? ORDER BY id LIMIT 1').get(record.ip) : null;
     if (existing) {
       if (strategy === 'skip') {
         errors.push(`第${i + 2}行: IP ${record.ip} 已存在，按"跳过"策略未导入`);
         skip++;
         continue;
       } else if (strategy === 'update') {
+        // 必须同时具备"原记录所属 VLAN"的管理权限，防止越权覆盖/迁移未授权 VLAN 的记录
+        if (!canManageVlan(req, existing.vlan)) {
+          errors.push(`第${i + 2}行: 无权更新IP ${record.ip} 的现有记录（其所属VLAN未授权给您）`);
+          skip++;
+          continue;
+        }
         try {
           ipService.updateRecord(existing.id, record);
           updated++;
@@ -208,9 +264,7 @@ function processRows(rows, req, strategy) {
     }
   }
 
-  const fileName = req.file ? Buffer.from(req.file.originalname, 'latin1').toString('utf8') : '未知';
-  dictService.auditLog(user, 'import_data', `导入文件: ${fileName}，成功${success}条，更新${updated}条，跳过${skip}条${errors.length > 0 ? `，错误${errors.length}条` : ''}`, { target_type: 'import' });
-  return { success, updated, skip, errors: errors.slice(0, 20), totalErrors: errors.length };
+  return { success, updated, skip, errors: errors.slice(0, 20), totalErrors: errors.length, allErrors: errors };
 }
 
 function getPlanIdByVlan(vlan) {
@@ -218,28 +272,25 @@ function getPlanIdByVlan(vlan) {
   return plan ? plan.id : null;
 }
 
-router.post('/excel', requireAuth, requireRole('superadmin', 'admin'), upload.single('file'), (req, res) => {
+async function handleImport(kind, req, res, next) {
   if (!req.file) return res.status(400).json({ error: '请选择文件' });
-  const strategy = req.body.strategy || 'skip';
+  const strategy = ['skip', 'update', 'error'].includes(req.body.strategy) ? req.body.strategy : 'skip';
+  const atomic = req.body.atomic === '1' || req.body.atomic === 'true';
+  if (importing) return res.status(429).json({ error: '已有导入任务正在进行，请稍后再试' });
+  importing = true;
   try {
-    const wb = xlsx.read(req.file.buffer, { type: 'buffer', cellDates: true });
-    const sheetName = wb.SheetNames[0];
-    const rows = xlsx.utils.sheet_to_json(wb.Sheets[sheetName], { defval: '' });
-    const result = processRows(rows, req, strategy);
+    const rows = await parseImportFile(req.file.buffer, kind);
+    const result = processRows(rows, req, strategy, atomic);
     res.json(result);
   } catch (e) {
-    res.status(400).json({ error: '解析Excel失败: ' + e.message });
+    if (!e.expose) logError(req, e, 'import');
+    res.status(e.expose ? (e.status || 400) : 500).json({ error: publicMessage(e, '导入失败，请检查文件内容后重试'), requestId: req.id });
+  } finally {
+    importing = false;
   }
-});
+}
 
-router.post('/csv', requireAuth, requireRole('superadmin', 'admin'), upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: '请选择文件' });
-  const strategy = req.body.strategy || 'skip';
-  parse(req.file.buffer.toString('utf-8'), { columns: true, skip_empty_lines: true }, (err, rows) => {
-    if (err) return res.status(400).json({ error: '解析CSV失败: ' + err.message });
-    const result = processRows(rows, req, strategy);
-    res.json(result);
-  });
-});
+router.post('/excel', requireAuth, requireRole('superadmin', 'admin'), handleUpload, (req, res, next) => handleImport('excel', req, res, next));
+router.post('/csv', requireAuth, requireRole('superadmin', 'admin'), handleUpload, (req, res, next) => handleImport('csv', req, res, next));
 
 module.exports = router;
