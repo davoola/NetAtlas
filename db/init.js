@@ -207,56 +207,6 @@ function initDatabase() {
     db.prepare(`INSERT INTO users (username, password_hash, role, display_name) VALUES (?,?,?,?)`).run('admin', hash, 'superadmin', '超级管理员');
   }
 
-  // --- Seed: statuses ---
-  db.prepare("UPDATE ip_records SET status = '已使用' WHERE status = 'DHCP动态'").run();
-  db.prepare("DELETE FROM dict_statuses WHERE name = 'DHCP动态'").run();
-  const statusSeed = [
-    ['已使用', 'IP地址已分配给具体设备使用', 1],
-    ['预留/备用', 'IP地址保留，暂未分配但已规划用途', 2],
-    ['已废弃', 'IP地址不再使用，待回收', 3],
-  ];
-  const stStmt = db.prepare('INSERT OR IGNORE INTO dict_statuses (name, description, sort_order) VALUES (?,?,?)');
-  statusSeed.forEach(s => stStmt.run(s[0], s[1], s[2]));
-
-  // --- Seed: device types ---
-  const deviceTypeSeed = [
-    ['核心IT与网络基础设备', '服务器、交换机、路由器、防火墙等核心网络与IT基础设施', 1],
-    ['办公与会议终端外设', '办公电脑、打印机、会议室终端、检索查询机等终端设备', 2],
-    ['安防监控与通道管理', '安防监控摄像头、门禁闸机、存包柜等安防与通道管理设备', 3],
-  ];
-  const dtStmt = db.prepare('INSERT OR IGNORE INTO dict_device_types (name, description, sort_order) VALUES (?,?,?)');
-  deviceTypeSeed.forEach(s => dtStmt.run(s[0], s[1], s[2]));
-
-  // --- Seed: departments ---
-  const deptSeed = ['清云宗','天剑宗','魔界'];
-  const depStmt = db.prepare('INSERT OR IGNORE INTO dict_departments (name, sort_order) VALUES (?,?)');
-  deptSeed.forEach((n, i) => depStmt.run(n, i));
-
-  // --- Seed: VLAN plans ---
-  db.prepare("DELETE FROM vlan_plans WHERE vlan = 'DHCP'").run();
-  db.prepare("UPDATE ip_records SET vlan = NULL WHERE vlan = 'DHCP'").run();
-  const existingPlans = db.prepare('SELECT COUNT(*) as cnt FROM vlan_plans').get();
-  if (existingPlans.cnt === 0) {
-  const vlanPlans = [
-    ['10','10.10.10.0/24','清云宗内网','255.255.255.0','10.10.10.1','清云宗核心网络',null,1],
-    ['20','172.20.20.0/24','天剑宗内网','255.255.255.0','172.20.20.1','天剑宗核心网络',null,2],
-    ['30','192.168.30.0/24','魔界内网','255.255.255.0','192.168.30.1','魔界核心网络',null,3],
-    ['99','10.99.99.0/24','公共网段','255.255.255.0','10.99.99.1','三宗共用公共网段','可用池 .10–.200',4],
-  ];
-  const vpStmt = db.prepare(`INSERT INTO vlan_plans (vlan, subnet, name, mask, gateway, description, address_pool_note, sort_order) VALUES (?,?,?,?,?,?,?,?)`);
-  vlanPlans.forEach(v => vpStmt.run(v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]));
-  }
-
-  // --- Seed: IP prefix gateways ---
-  const prefixGateways = [
-    ['10.10.10','10.10.10.1','10'],
-    ['172.20.20','172.20.20.1','20'],
-    ['192.168.30','192.168.30.1','30'],
-    ['10.99.99','10.99.99.1','99'],
-  ];
-  const pgStmt = db.prepare('INSERT OR IGNORE INTO ip_prefix_gateways (prefix, gateway, default_vlan) VALUES (?,?,?)');
-  prefixGateways.forEach(g => pgStmt.run(g[0], g[1], g[2]));
-
   // --- Seed: system settings ---
   const ssStmt = db.prepare('INSERT OR IGNORE INTO system_settings (key, value) VALUES (?,?)');
   ssStmt.run('site_name', DEFAULT_SITE_NAME);
@@ -264,6 +214,7 @@ function initDatabase() {
   db.close();
   console.log('Database initialized successfully at:', DB_PATH);
   console.log('Default admin: username=admin, password=admin123');
+  console.log('Note: dictionary / VLAN / gateway tables are empty — configure them in the UI.');
 }
 
 initDatabase();
