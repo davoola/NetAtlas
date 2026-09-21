@@ -5,13 +5,32 @@ const ipService = require('../services/ipService');
 const dictService = require('../services/dictService');
 const userService = require('../services/userService');
 const db = require('../db');
+const sessionStore = require('../middleware/sessionStore');
+const { UserError, publicMessage, logError } = require('../utils/errors');
+const { limitedName, clampInt, checkStringFields } = require('../utils/validate');
+
+const DICT_LIMITS = { name: 100, description: 500, vlan: 50, subnet: 50, mask: 50, gateway: 45, address_pool_note: 200, prefix: 50, default_vlan: 50 };
+// 字典类接口的输入长度/类型校验；不合法时抛出业务错误
+function checkDictBody(body) {
+  if (!body || typeof body !== 'object') throw new UserError('请求参数不正确');
+  checkStringFields(body, DICT_LIMITS, { name: '名称', description: '描述', vlan: 'VLAN', subnet: '网段', mask: '掩码', gateway: '网关', address_pool_note: '地址池说明', prefix: 'IP前缀', default_vlan: '默认VLAN' });
+}
+
+// 统一的 catch 处理：业务错误返回原文，内部错误只返回通用提示并记录服务端日志
+function fail(req, res, e, status = 400, fallback = '操作失败，请稍后重试') {
+  const msg = publicMessage(e, fallback);
+  if (msg === fallback) logError(req, e, 'api'); // 被屏蔽的内部错误才记录详细日志
+  const st = e && e.expose && e.status ? e.status : status;
+  return res.status(st).json({ error: msg, requestId: req.id });
+}
 
 // --- Dashboard stats ---
 router.get('/stats', requireAuth, (req, res) => {
-  const kpi = ipService.getDashboardStats();
-  const vlanStats = ipService.getVlanStats();
-  const deptStats = ipService.getDepartmentStats();
-  const deviceStats = ipService.getDeviceTypeStats();
+  const scope = getReadableVlanScope(req);
+  const kpi = ipService.getDashboardStats(scope);
+  const vlanStats = ipService.getVlanStats(scope);
+  const deptStats = ipService.getDepartmentStats(scope);
+  const deviceStats = ipService.getDeviceTypeStats(scope);
   res.json({ kpi, vlanStats, deptStats, deviceStats });
 });
 
@@ -19,23 +38,39 @@ router.get('/stats', requireAuth, (req, res) => {
 router.get('/dict/device-types', requireAuth, (req, res) => res.json(dictService.getDeviceTypes()));
 router.get('/dict/statuses', requireAuth, (req, res) => res.json(dictService.getStatuses()));
 router.get('/dict/departments', requireAuth, (req, res) => res.json(dictService.getDepartments()));
-router.get('/dict/vlan-plans', requireAuth, (req, res) => res.json(dictService.getVlanPlans()));
-router.get('/dict/prefix-gateways', requireAuth, (req, res) => res.json(dictService.getPrefixGateways()));
+// VLAN 规划 / 网关映射属于网络拓扑信息：受限管理员只能看到自己有权限的 VLAN
+router.get('/dict/vlan-plans', requireAuth, (req, res) => {
+  const scope = getReadableVlanScope(req);
+  res.json(dictService.getVlanPlans().filter(p => ipService.planInScope(scope, p)));
+});
+router.get('/dict/prefix-gateways', requireAuth, (req, res) => {
+  const scope = getReadableVlanScope(req);
+  const all = dictService.getPrefixGateways();
+  if (scope.all) return res.json(all);
+  const allowedPrefixes = new Set(
+    dictService.getVlanPlans().filter(p => ipService.planInScope(scope, p) && p.subnet)
+      .map(p => p.subnet.split('/')[0].split('.').slice(0, 3).join('.'))
+  );
+  res.json(all.filter(g => allowedPrefixes.has(g.prefix) || (g.default_vlan && scope.vlans.includes(String(g.default_vlan)))));
+});
 
 // --- Gateway lookup ---
 router.get('/gateway-lookup', requireAuth, (req, res) => {
   const { ip } = req.query;
-  if (!ip) return res.json({ gateway: null, vlan: null });
-  res.json({ gateway: ipService.lookupGateway(ip), vlan: ipService.lookupVlanByIp(ip) });
+  if (!ip || typeof ip !== 'string' || ip.length > 45) return res.json({ gateway: null, vlan: null });
+  const vlan = ipService.lookupVlanByIp(ip);
+  const scope = getReadableVlanScope(req);
+  if (!scope.all && (!vlan || !scope.vlans.includes(String(vlan)))) return res.json({ gateway: null, vlan: null });
+  res.json({ gateway: ipService.lookupGateway(ip), vlan });
 });
 
 // --- IP records list ---
 router.get('/records', requireAuth, (req, res) => {
   const scope = getReadableVlanScope(req);
   const result = ipService.listRecords({
-    page: parseInt(req.query.page) || 1,
-    perPage: parseInt(req.query.perPage) || 20,
-    search: req.query.search || '',
+    page: clampInt(req.query.page, 1, 1, 1000000),
+    perPage: clampInt(req.query.perPage, 20, 1, 200),
+    search: typeof req.query.search === 'string' ? req.query.search : '',
     vlan: req.query.vlan || '',
     department: req.query.department || '',
     status: req.query.status || '',
@@ -62,20 +97,23 @@ router.get('/records/:id', requireAuth, (req, res) => {
 // --- Create record ---
 router.post('/records', requireAuth, (req, res) => {
   const vlan = req.body.vlan || ipService.lookupVlanByIp(req.body.ip);
+  // 先鉴权再校验，避免未授权用户通过校验错误信息探测 VLAN 网段规划
+  if (!canManageVlan(req, vlan)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  }
   try {
     ipService.validateIpForVlan(req.body.ip, req.body.vlan);
   } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  if (!canManageVlan(req, vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+    return fail(req, res, e, 400);
   }
   try {
     const record = ipService.createRecord(req.body);
     dictService.auditLog(req.session.user, 'create_record', `新增IP记录: ${record.ip || 'N/A'} (ID:${record.id})`, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
     res.status(201).json(record);
   } catch (e) {
-    res.status(400).json({ error: '创建失败: ' + e.message });
+    const msg = publicMessage(e, '请检查输入内容');
+    if (msg === '请检查输入内容') logError(req, e, 'create_record');
+    res.status(400).json({ error: '创建失败: ' + msg, requestId: req.id });
   }
 });
 
@@ -83,17 +121,14 @@ router.post('/records', requireAuth, (req, res) => {
 router.put('/records/:id', requireAuth, (req, res) => {
   const existing = ipService.getRecord(req.params.id);
   if (!existing) return res.status(404).json({ error: '记录不存在' });
+  const newVlan = req.body.vlan || existing.vlan;
+  if (!canManageVlan(req, newVlan) || !canManageVlan(req, existing.vlan)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  }
   try {
     ipService.validateIpForVlan(req.body.ip, req.body.vlan);
   } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  const newVlan = req.body.vlan || existing.vlan;
-  if (!canManageVlan(req, newVlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
-  }
-  if (!canManageVlan(req, existing.vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+    return fail(req, res, e, 400);
   }
   try {
     const oldRecord = existing;
@@ -111,7 +146,9 @@ router.put('/records/:id', requireAuth, (req, res) => {
     }
     res.json(record);
   } catch (e) {
-    res.status(400).json({ error: '修改失败: ' + e.message });
+    const msg = publicMessage(e, '请检查输入内容');
+    if (msg === '请检查输入内容') logError(req, e, 'update_record');
+    res.status(400).json({ error: '修改失败: ' + msg, requestId: req.id });
   }
 });
 
@@ -171,7 +208,8 @@ router.get('/subnet/:prefix', requireAuth, (req, res) => {
     }
     res.json({ prefix: raw, records, plan: plan || null });
   } catch (e) {
-    res.status(500).json({ error: '加载网�����明细失败: ' + e.message });
+    logError(req, e, 'subnet');
+    res.status(500).json({ error: '加载网段明细失败', requestId: req.id });
   }
 });
 
@@ -184,16 +222,16 @@ router.get('/my-vlan-permissions', requireAuth, (req, res) => {
 
 // --- Dictionary management (superadmin only) ---
 router.post('/dict/device-types', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addDeviceType(req.body.name, req.body.description);
     dictService.auditLog(req.session.user, 'add_device_type', `新增设备类型: ${req.body.name}`, { target_type: 'device_type' });
     res.json(dictService.getDeviceTypes());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/device-types/:id', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
-  dictService.updateDeviceType(req.params.id, req.body);
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
+  try { dictService.updateDeviceType(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
   dictService.auditLog(req.session.user, 'update_device_type', `修改设备类型: ${req.body.name}`, { target_type: 'device_type', target_id: req.params.id });
   res.json(dictService.getDeviceTypes());
 });
@@ -202,20 +240,20 @@ router.delete('/dict/device-types/:id', requireRole('superadmin'), (req, res) =>
     dictService.deleteDeviceType(req.params.id);
     dictService.auditLog(req.session.user, 'delete_device_type', `ID:${req.params.id}`, { target_type: 'device_type', target_id: req.params.id });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 
 router.post('/dict/statuses', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addStatus(req.body.name, req.body.description);
     dictService.auditLog(req.session.user, 'add_status', `新增使用状态: ${req.body.name}`, { target_type: 'status' });
     res.json(dictService.getStatuses());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/statuses/:id', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
-  dictService.updateStatus(req.params.id, req.body);
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
+  try { dictService.updateStatus(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
   dictService.auditLog(req.session.user, 'update_status', `修改使用状态: ${req.body.name}`, { target_type: 'status', target_id: req.params.id });
   res.json(dictService.getStatuses());
 });
@@ -224,20 +262,20 @@ router.delete('/dict/statuses/:id', requireRole('superadmin'), (req, res) => {
     dictService.deleteStatus(req.params.id);
     dictService.auditLog(req.session.user, 'delete_status', `ID:${req.params.id}`, { target_type: 'status', target_id: req.params.id });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 
 router.post('/dict/departments', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addDepartment(req.body.name);
     dictService.auditLog(req.session.user, 'add_department', `新增部门: ${req.body.name}`, { target_type: 'department' });
     res.json(dictService.getDepartments());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/departments/:id', requireRole('superadmin'), (req, res) => {
-  if (!req.body.name || !String(req.body.name).trim()) return res.status(400).json({ error: '名称为必填项' });
-  dictService.updateDepartment(req.params.id, req.body);
+  try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
+  try { dictService.updateDepartment(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
   dictService.auditLog(req.session.user, 'update_department', `修改部门: ${req.body.name}`, { target_type: 'department', target_id: req.params.id });
   res.json(dictService.getDepartments());
 });
@@ -246,51 +284,55 @@ router.delete('/dict/departments/:id', requireRole('superadmin'), (req, res) => 
     dictService.deleteDepartment(req.params.id);
     dictService.auditLog(req.session.user, 'delete_department', `ID:${req.params.id}`, { target_type: 'department', target_id: req.params.id });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 
 router.post('/dict/vlan-plans', requireRole('superadmin'), (req, res) => {
   try {
+    checkDictBody(req.body);
     dictService.addVlanPlan(req.body);
     dictService.auditLog(req.session.user, 'add_vlan_plan', `新增VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan' });
     res.json(dictService.getVlanPlans());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/vlan-plans/:id', requireRole('superadmin'), (req, res) => {
   try {
+    checkDictBody(req.body);
     dictService.updateVlanPlan(req.params.id, req.body);
     dictService.auditLog(req.session.user, 'update_vlan_plan', `修改VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan', target_id: req.params.id });
     res.json(dictService.getVlanPlans());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.delete('/dict/vlan-plans/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deleteVlanPlan(req.params.id);
     dictService.auditLog(req.session.user, 'delete_vlan_plan', `ID:${req.params.id}`, { target_type: 'vlan_plan', target_id: req.params.id });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 
 router.post('/dict/prefix-gateways', requireRole('superadmin'), (req, res) => {
   try {
+    checkDictBody(req.body);
     dictService.addPrefixGateway(req.body.prefix, req.body.gateway, req.body.default_vlan);
     dictService.auditLog(req.session.user, 'add_prefix_gateway', `新增网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway' });
     res.json(dictService.getPrefixGateways());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/prefix-gateways/:id', requireRole('superadmin'), (req, res) => {
   try {
+    checkDictBody(req.body);
     dictService.updatePrefixGateway(req.params.id, req.body.prefix, req.body.gateway, req.body.default_vlan);
     dictService.auditLog(req.session.user, 'update_prefix_gateway', `修改网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway', target_id: req.params.id });
     res.json(dictService.getPrefixGateways());
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 router.delete('/dict/prefix-gateways/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deletePrefixGateway(req.params.id);
     dictService.auditLog(req.session.user, 'delete_prefix_gateway', `ID:${req.params.id}`, { target_type: 'prefix_gateway', target_id: req.params.id });
     res.json({ success: true });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) { fail(req, res, e); }
 });
 
 // --- Database checkpoint (superadmin only) ---
@@ -300,17 +342,24 @@ router.post('/system/checkpoint', requireRole('superadmin'), (req, res) => {
     dictService.auditLog(req.session.user, 'db_checkpoint', '手动执行数据库Checkpoint');
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    fail(req, res, e, 500, '数据库 Checkpoint 失败');
   }
 });
 
 // --- System settings ---
+const ALLOWED_SETTINGS = { site_name: 100 };
 router.get('/settings/:key', requireAuth, (req, res) => {
+  if (!Object.prototype.hasOwnProperty.call(ALLOWED_SETTINGS, req.params.key)) return res.status(404).json({ error: '配置项不存在' });
   res.json({ key: req.params.key, value: dictService.getSetting(req.params.key) });
 });
 router.put('/settings/:key', requireRole('superadmin'), (req, res) => {
-  dictService.setSetting(req.params.key, req.body.value);
-  dictService.auditLog(req.session.user, 'update_setting', `${req.params.key} = ${req.body.value}`);
+  const key = req.params.key;
+  if (!Object.prototype.hasOwnProperty.call(ALLOWED_SETTINGS, key)) return res.status(404).json({ error: '配置项不存在' });
+  const value = req.body.value;
+  if (typeof value !== 'string' || !value.trim()) return res.status(400).json({ error: '配置值不能为空' });
+  if (value.length > ALLOWED_SETTINGS[key]) return res.status(400).json({ error: `配置值过长（最多 ${ALLOWED_SETTINGS[key]} 个字符）` });
+  dictService.setSetting(key, value.trim());
+  dictService.auditLog(req.session.user, 'update_setting', `${key} = ${value.trim()}`);
   res.json({ success: true });
 });
 
@@ -330,10 +379,13 @@ router.post('/users', requireRole('superadmin'), (req, res) => {
   if (!['superadmin', 'admin', 'viewer'].includes(role)) return res.status(400).json({ error: '无效角色' });
   try {
     const id = userService.createUser(username, password, role, display_name);
-    dictService.auditLog(req.session.user, 'create_user', `创建用户: ${username} (${role})`);
-    res.status(201).json({ id, username, role, display_name, enabled: 1 });
+    dictService.auditLog(req.session.user, 'create_user', `创建用户: ${String(username).trim()} (${role})`);
+    res.status(201).json({ id, username: String(username).trim(), role, display_name, enabled: 1 });
   } catch (e) {
-    res.status(400).json({ error: '用户名已存在' });
+    if (e.expose) return fail(req, res, e);
+    // 用户名唯一约束冲突是此处最常见的失败原因
+    if (/UNIQUE/i.test(String(e.message))) return res.status(400).json({ error: '用户名已存在' });
+    fail(req, res, e);
   }
 });
 
@@ -341,31 +393,55 @@ router.put('/users/:id', requireRole('superadmin'), (req, res) => {
   if (req.body.username !== undefined && !String(req.body.username).trim()) return res.status(400).json({ error: '用户名不能为空' });
   let user;
   try {
-    user = userService.updateUser(req.params.id, req.body);
+    user = userService.updateUser(req.params.id, req.body, req.session.user.id);
   } catch (e) {
-    return res.status(400).json({ error: '用户名已存在' });
+    if (!e.expose && /UNIQUE/i.test(String(e.message))) return res.status(400).json({ error: '用户名已存在' });
+    return fail(req, res, e);
   }
   if (!user) return res.status(404).json({ error: '用户不存在' });
   dictService.auditLog(req.session.user, 'update_user', `修改用户: ${user.username}`);
-  if (parseInt(req.params.id, 10) === req.session.user.id) {
+  const isSelf = parseInt(req.params.id, 10) === req.session.user.id;
+  if (isSelf) {
     req.session.user.username = user.username;
     req.session.user.display_name = user.display_name;
     req.session.user.role = user.role;
+  } else if (user._securityChanged) {
+    // 角色/启用状态变更后立即撤销该用户的旧会话
+    sessionStore.destroyUser(user.id);
   }
+  delete user._securityChanged;
   res.json(user);
 });
 
 router.post('/users/:id/reset-password', requireRole('superadmin'), (req, res) => {
   const { password } = req.body;
-  if (!password || password.length < 6) return res.status(400).json({ error: '密码至少6位' });
-  userService.resetPassword(req.params.id, password);
+  if (typeof password !== 'string' || !password) return res.status(400).json({ error: '密码为必填项' });
+  let found;
+  try {
+    found = userService.resetPassword(req.params.id, password);
+  } catch (e) {
+    return fail(req, res, e);
+  }
+  if (!found) return res.status(404).json({ error: '用户不存在' });
+  // 重置密码后，撤销目标用户的全部现有会话
+  const targetId = parseInt(req.params.id, 10);
+  if (targetId === req.session.user.id) sessionStore.destroyUser(targetId, req.sessionID);
+  else sessionStore.destroyUser(targetId);
   dictService.auditLog(req.session.user, 'reset_password', `重置用户ID:${req.params.id}密码`);
   res.json({ success: true });
 });
 
 router.put('/users/:id/permissions', requireRole('superadmin'), (req, res) => {
   const { vlans } = req.body;
-  userService.setAdminVlanPermissions(req.params.id, vlans || []);
+  if (!Array.isArray(vlans)) return res.status(400).json({ error: 'vlans 必须为数组' }); // 避免缺参数时误清空全部授权
+  try {
+    userService.setAdminVlanPermissions(req.params.id, vlans);
+  } catch (e) {
+    return fail(req, res, e);
+  }
+  // 权限范围变化：撤销目标用户旧会话，使其重新登录
+  const targetId = parseInt(req.params.id, 10);
+  if (targetId !== req.session.user.id) sessionStore.destroyUser(targetId);
   dictService.auditLog(req.session.user, 'update_permissions', `修改用户ID:${req.params.id} VLAN权限`);
   res.json({ success: true });
 });
@@ -376,7 +452,12 @@ router.delete('/users/:id', requireRole('superadmin'), (req, res) => {
   }
   const user = userService.findById(req.params.id);
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  try {
+    userService.deleteUser(req.params.id);
+  } catch (e) {
+    return fail(req, res, e);
+  }
+  sessionStore.destroyUser(user.id);
   dictService.auditLog(req.session.user, 'delete_user', `删除用户: ${user.username}`);
   res.json({ success: true });
 });
@@ -384,14 +465,17 @@ router.delete('/users/:id', requireRole('superadmin'), (req, res) => {
 // --- Self change password ---
 router.post('/change-password', requireAuth, (req, res) => {
   const { oldPassword, newPassword } = req.body;
-  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: '新密码至少6位' });
+  if (typeof newPassword !== 'string' || !newPassword) return res.status(400).json({ error: '新密码为必填项' });
   try {
     userService.changeOwnPassword(req.session.user.id, oldPassword, newPassword);
-    dictService.auditLog(req.session.user, 'change_password', '修改自身密码');
-    res.json({ success: true });
   } catch (e) {
-    res.status(400).json({ error: e.message });
+    return fail(req, res, e);
   }
+  // 改密后撤销该用户的其他会话，保留当前会话；并解除"必须改密"状态
+  sessionStore.destroyUser(req.session.user.id, req.sessionID);
+  req.session.user.mustChangePassword = false;
+  dictService.auditLog(req.session.user, 'change_password', '修改自身密码');
+  res.json({ success: true });
 });
 
 // --- Audit logs (superadmin only) ---
@@ -406,12 +490,13 @@ router.post('/audit-logs/cleanup', requireRole('superadmin'), (req, res) => {
 });
 
 router.get('/audit-logs', requireRole('superadmin'), (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const perPage = parseInt(req.query.perPage) || 20;
-  const search = req.query.search || '';
-  const startDate = req.query.startDate || '';
-  const endDate = req.query.endDate || '';
-  const targetType = req.query.target_type || '';
+  const page = clampInt(req.query.page, 1, 1, 1000000);
+  const perPage = clampInt(req.query.perPage, 20, 1, 200);
+  const str = (v) => (typeof v === 'string' ? v.slice(0, 200) : '');
+  const search = str(req.query.search);
+  const startDate = str(req.query.startDate);
+  const endDate = str(req.query.endDate);
+  const targetType = str(req.query.target_type);
   const offset = (page - 1) * perPage;
   const where = [];
   const params = [];
@@ -445,21 +530,38 @@ function csvEscape(v) {
   return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
 }
 
+const EXPORT_MAX_ROWS = parseInt(process.env.EXPORT_MAX_ROWS, 10) || 200000;
+const EXPORT_CHUNK = 2000;
+
 router.get('/export/records', requireAuth, (req, res) => {
   const scope = getReadableVlanScope(req);
-  const result = ipService.listRecords({ page: 1, perPage: 999999, search: req.query.search || '', vlan: req.query.vlan || '', department: req.query.department || '', status: req.query.status || '', deviceType: req.query.deviceType || '', sort: 'ip', order: 'asc', scope, onlyDuplicate: req.query.onlyDuplicate || '', onlyMacConflict: req.query.onlyMacConflict || '' });
+  const q = (k) => (typeof req.query[k] === 'string' ? req.query[k] : '');
+  const filters = { search: q('search'), vlan: q('vlan'), department: q('department'), status: q('status'), deviceType: q('deviceType'), sort: 'ip', order: 'asc', scope, onlyDuplicate: q('onlyDuplicate'), onlyMacConflict: q('onlyMacConflict') };
   const headers = ['ID','IP地址','VLAN','MAC地址','设备类型','设备名称','物理位置','部门','使用人','状态','登记日期','上层交换机','交换机端口','向日葵ID','网关','备注','更新日期'];
   const cols = ['id','ip','vlan','mac','device_type','device_name','location','department','user_name','status','registered_at','upper_switch','switch_port','sunlogin_id','gateway','remark','updated_at'];
-  let csv = '\uFEFF' + headers.join(',') + '\n';
-  result.rows.forEach(r => {
-    csv += cols.map(c => csvEscape(r[c])).join(',') + '\n';
-  });
+
+  const first = ipService.listRecords({ ...filters, page: 1, perPage: EXPORT_CHUNK });
+  if (first.total > EXPORT_MAX_ROWS) {
+    return res.status(400).json({ error: `导出数据量（${first.total} 条）超过上限（${EXPORT_MAX_ROWS} 条），请缩小筛选范围后再导出` });
+  }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="ip_records_${new Date().toISOString().slice(0,10)}.csv"`);
-  res.send(csv);
+  // 分块输出，避免一次性把全部数据拼成超大字符串
+  res.write('\uFEFF' + headers.join(',') + '\n');
+  let page = 1, result = first;
+  for (;;) {
+    res.write(result.rows.map(r => cols.map(c => csvEscape(r[c])).join(',')).join('\n') + (result.rows.length ? '\n' : ''));
+    if (page >= result.totalPages) break;
+    page += 1;
+    result = ipService.listRecords({ ...filters, page, perPage: EXPORT_CHUNK });
+  }
+  res.end();
+  try {
+    dictService.auditLog(req.session.user, 'export_records', `导出IP记录 ${first.total} 条（筛选: ${JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && !['sort','order','scope'].includes(k)))).slice(0, 300)}）`, { target_type: 'ip_record' });
+  } catch (e) { logError(req, e, 'export-audit'); }
 });
 
-// --- Export subnet (CSV) ---
+// --- Export subnet records (CSV) ---
 router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
   const raw = decodeURIComponent(req.params.prefix);
   const scope = getReadableVlanScope(req);

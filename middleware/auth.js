@@ -28,6 +28,17 @@ function requireRole(...roles) {
   };
 }
 
+// 使用初始/默认密码登录的账号，必须先修改密码才能访问业务接口
+function enforcePasswordChange(req, res, next) {
+  const u = req.session && req.session.user;
+  if (!u || !u.mustChangePassword) return next();
+  if (req.method === 'POST' && (req.path === '/api/change-password' || req.path === '/logout')) return next();
+  if (req.path.startsWith('/api/')) {
+    return res.status(403).json({ error: '请先修改初始密码', code: 'PASSWORD_CHANGE_REQUIRED' });
+  }
+  next();
+}
+
 function resolveVlanToken(token) {
   if (!token) return null;
   const m = String(token).match(/^plan:(\d+)$/);
@@ -43,9 +54,11 @@ function canManageVlan(req, vlan) {
   if (req.session.user.role === 'superadmin') return true;
   if (req.session.user.role === 'admin') {
     const token = String(vlan || '');
+    if (!token) return false;
     const resolved = resolveVlanToken(vlan);
-    const perm = db.prepare('SELECT 1 FROM admin_vlan_permissions WHERE user_id = ? AND (vlan = ? OR vlan = ?)').get(req.session.user.id, token, resolved);
-    return !!perm;
+    // 授权项既可能以 VLAN 编号保存，也可能以 plan:ID 令牌保存（用户管理界面保存的是后者），统一解析为 VLAN 编号后比较
+    const perms = db.prepare('SELECT vlan FROM admin_vlan_permissions WHERE user_id = ?').all(req.session.user.id);
+    return perms.some(p => p.vlan === token || (resolved !== null && (p.vlan === resolved || resolveVlanToken(p.vlan) === resolved)));
   }
   return false;
 }
@@ -71,4 +84,4 @@ function getReadableVlanScope(req) {
   return { all: false, vlans: [] };
 }
 
-module.exports = { requireAuth, requireRole, canManageVlan, canManageVlanMiddleware, getReadableVlanScope };
+module.exports = { enforcePasswordChange, requireAuth, requireRole, canManageVlan, canManageVlanMiddleware, getReadableVlanScope };

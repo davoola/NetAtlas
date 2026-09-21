@@ -5,6 +5,8 @@ const ACTION_LABELS = {
   update_record: '修改IP记录',
   delete_record: '删除IP记录',
   import_data: '数据导入',
+  export_records: '导出IP记录',
+  login_failed: '登录失败',
   add_device_type: '新增设备类型',
   update_device_type: '修改设备类型',
   delete_device_type: '删除设备类型',

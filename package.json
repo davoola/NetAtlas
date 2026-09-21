@@ -9,17 +9,18 @@
     "dev": "node --watch --experimental-sqlite index.js",
     "init-db": "node --experimental-sqlite db/init.js",
     "db-init": "node --experimental-sqlite db/init.js",
-    "build": "echo \"No build step needed\""
+    "build": "echo \"No build step needed\"",
+    "test": "node --experimental-sqlite --test tests/security.test.js"
   },
   "dependencies": {
-    "bcryptjs": "^2.4.3",
+    "@e965/xlsx": "^0.20.3",
+    "bcryptjs": "^3.0.3",
     "connect-flash": "^0.1.1",
-    "csv-parse": "^5.5.6",
-    "ejs": "^3.1.10",
-    "express": "^4.21.0",
+    "csv-parse": "^7.0.2",
+    "ejs": "^6.0.1",
+    "express": "^5.2.1",
     "express-ejs-layouts": "^2.5.1",
-    "express-session": "^1.18.1",
-    "multer": "^1.4.5-lts.1",
-    "xlsx": "^0.18.5"
+    "express-session": "^1.19.0",
+    "multer": "^2.4.0"
   }
 }

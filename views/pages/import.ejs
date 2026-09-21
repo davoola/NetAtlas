@@ -22,6 +22,9 @@
           </select>
         </div>
         <div class="form-group">
+          <label><input type="checkbox" id="importAtomic"> 严格模式（任何一行被跳过则整体回滚，不写入任何数据）</label>
+        </div>
+        <div class="form-group">
           <label>选择文件</label>
           <input type="file" id="importFile" accept=".xlsx,.csv" required>
         </div>

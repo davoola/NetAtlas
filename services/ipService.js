@@ -1,4 +1,6 @@
 const db = require('../db');
+const { UserError } = require('../utils/errors');
+const { checkStringFields, clampInt } = require('../utils/validate');
 
 const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
 
@@ -74,9 +76,12 @@ function getMacConflictMacSet() {
 }
 
 function listRecords({ page = 1, perPage = 20, search = '', vlan = '', department = '', status = '', deviceType = '', sort = 'updated_at', order = 'desc', scope = null, onlyDuplicate = '', onlyMacConflict = '' }) {
+  page = clampInt(page, 1, 1, 1000000);
+  perPage = clampInt(perPage, 20, 1, 5000);
   const offset = (page - 1) * perPage;
   const where = [];
   const params = [];
+  search = search === undefined || search === null ? '' : String(search).slice(0, 200);
 
   if (search) {
     where.push('(ip LIKE ? OR device_name LIKE ? OR user_name LIKE ? OR mac LIKE ?)');
@@ -129,7 +134,7 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   const validSorts = ['ip','mac','device_name','user_name','updated_at','registered_at','vlan','status','department','device_type'];
   let sortCol = validSorts.includes(sort) ? sort : 'updated_at';
   if (sortCol === 'ip') sortCol = 'ip_sort';
-  const sortDir = order.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  const sortDir = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
   const total = db.prepare(`SELECT COUNT(*) as cnt FROM ip_records ${whereClause}`).get(...params).cnt;
   const rows = db.prepare(`
@@ -227,6 +232,7 @@ function isDynamicVlanToken(vlanToken) {
 }
 
 function createRecord(data) {
+  checkStringFields(data);
   const isDynamic = isDynamicVlanToken(data.vlan);
   if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
   if (!isDynamic) {
@@ -242,7 +248,7 @@ function createRecord(data) {
   const gateway = data.gateway || (data.ip ? lookupGateway(data.ip) : null);
   const vlan = resolveVlanToken(data.vlan) || (data.ip ? lookupVlanByIp(data.ip) : null);
   const ipSort = data.ip ? ipToInt(data.ip) : null;
-  db.prepare(`
+  const insertResult = db.prepare(`
     INSERT INTO ip_records (vlan, ip, ip_sort, mac, device_type, device_name, location, department, user_name, remark, status, registered_at, upper_switch, switch_port, sunlogin_id, gateway)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
@@ -253,10 +259,11 @@ function createRecord(data) {
     data.upper_switch || null, data.switch_port || null,
     data.sunlogin_id || null, gateway
   );
-  return db.prepare('SELECT * FROM ip_records ORDER BY id DESC LIMIT 1').get();
+  return getRecord(insertResult.lastInsertRowid);
 }
 
 function updateRecord(id, data) {
+  checkStringFields(data);
   const existing = getRecord(id);
   if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
   if (!existing) return null;
@@ -294,22 +301,37 @@ function deleteRecord(id) {
   return db.prepare('DELETE FROM ip_records WHERE id = ?').run(id);
 }
 
-function getDashboardStats() {
-  const total = db.prepare('SELECT COUNT(*) as cnt FROM ip_records').get().cnt;
-  const used = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE status = '已使用'").get().cnt;
-  const reserved = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE status = '预留/备用'").get().cnt;
-  const deprecated = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE status = '已废弃'").get().cnt;
-  const withMac = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE mac IS NOT NULL AND mac != ''").get().cnt;
-  const withSunlogin = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE sunlogin_id IS NOT NULL AND sunlogin_id != ''").get().cnt;
-  const dupIps = db.prepare("SELECT COUNT(*) as cnt FROM (SELECT ip FROM ip_records WHERE ip IS NOT NULL AND ip != '' GROUP BY ip HAVING COUNT(*) > 1)").get().cnt;
-  const macConflictIps = db.prepare("SELECT COUNT(*) as cnt FROM (SELECT lower(trim(mac)) AS mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != '' GROUP BY lower(trim(mac)) HAVING COUNT(*) > 1)").get().cnt;
-  const activeVlans = db.prepare("SELECT COUNT(DISTINCT vlan) as cnt FROM ip_records WHERE vlan IS NOT NULL AND vlan != ''").get().cnt;
+// --- 权限范围（scope）辅助：统计、字典等查询统一使用 ---
+function scopeClause(scope, column = 'vlan') {
+  if (!scope || scope.all) return { clause: '', params: [] };
+  if (!scope.vlans || scope.vlans.length === 0) return { clause: ' AND 1 = 0', params: [] };
+  return { clause: ` AND ${column} IN (${scope.vlans.map(() => '?').join(',')})`, params: [...scope.vlans] };
+}
+
+function planInScope(scope, plan) {
+  if (!scope || scope.all) return true;
+  if (!plan) return false;
+  return scope.vlans.includes(plan.vlan) || scope.vlans.includes(`plan:${plan.id}`);
+}
+
+function getDashboardStats(scope = null) {
+  const w = scopeClause(scope);
+  const count = (extraWhere = '1=1') => db.prepare(`SELECT COUNT(*) as cnt FROM ip_records WHERE ${extraWhere}${w.clause}`).get(...w.params).cnt;
+  const total = count();
+  const used = db.prepare(`SELECT COUNT(*) as cnt FROM ip_records WHERE status = ?${w.clause}`).get('已使用', ...w.params).cnt;
+  const reserved = db.prepare(`SELECT COUNT(*) as cnt FROM ip_records WHERE status = ?${w.clause}`).get('预留/备用', ...w.params).cnt;
+  const deprecated = db.prepare(`SELECT COUNT(*) as cnt FROM ip_records WHERE status = ?${w.clause}`).get('已废弃', ...w.params).cnt;
+  const withMac = count("mac IS NOT NULL AND mac != ''");
+  const withSunlogin = count("sunlogin_id IS NOT NULL AND sunlogin_id != ''");
+  const dupIps = db.prepare(`SELECT COUNT(*) as cnt FROM (SELECT ip FROM ip_records WHERE ip IS NOT NULL AND ip != ''${w.clause} GROUP BY ip HAVING COUNT(*) > 1)`).get(...w.params).cnt;
+  const macConflictIps = db.prepare(`SELECT COUNT(*) as cnt FROM (SELECT lower(trim(mac)) AS mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != ''${w.clause} GROUP BY lower(trim(mac)) HAVING COUNT(*) > 1)`).get(...w.params).cnt;
+  const activeVlans = db.prepare(`SELECT COUNT(DISTINCT vlan) as cnt FROM ip_records WHERE vlan IS NOT NULL AND vlan != ''${w.clause}`).get(...w.params).cnt;
 
   return { total, used, reserved, deprecated, withMac, withSunlogin, dupIps, macConflictIps, activeVlans };
 }
 
-function getVlanStats() {
-  const plans = db.prepare('SELECT * FROM vlan_plans ORDER BY sort_order, id').all();
+function getVlanStats(scope = null) {
+  const plans = db.prepare('SELECT * FROM vlan_plans ORDER BY sort_order, id').all().filter(p => planInScope(scope, p));
 
   const result = [];
 
@@ -336,22 +358,24 @@ function getVlanStats() {
   return result;
 }
 
-function getDepartmentStats() {
+function getDepartmentStats(scope = null) {
+  const w = scopeClause(scope);
   const rows = db.prepare(`
     SELECT department, COUNT(*) as cnt
-    FROM ip_records WHERE department IS NOT NULL AND department != ''
+    FROM ip_records WHERE department IS NOT NULL AND department != ''${w.clause}
     GROUP BY department ORDER BY cnt DESC
-  `).all();
+  `).all(...w.params);
   const total = rows.reduce((s, r) => s + r.cnt, 0);
   return rows.map(r => ({ ...r, percentage: total > 0 ? ((r.cnt / total) * 100).toFixed(1) : 0 }));
 }
 
-function getDeviceTypeStats() {
+function getDeviceTypeStats(scope = null) {
+  const w = scopeClause(scope);
   const rows = db.prepare(`
     SELECT device_type, COUNT(*) as cnt
-    FROM ip_records WHERE device_type IS NOT NULL AND device_type != ''
+    FROM ip_records WHERE device_type IS NOT NULL AND device_type != ''${w.clause}
     GROUP BY device_type ORDER BY cnt DESC
-  `).all();
+  `).all(...w.params);
   const total = rows.reduce((s, r) => s + r.cnt, 0);
   return rows.map(r => ({ ...r, percentage: total > 0 ? ((r.cnt / total) * 100).toFixed(1) : 0 }));
 }
@@ -420,6 +444,7 @@ function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
 }
 
 module.exports = {
+  scopeClause, planInScope,
   lookupGateway, lookupVlanByIp, getDuplicateIpSet, getMacConflictMacSet, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,

@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover">
-  <% if (typeof user !== 'undefined' && user) { %><meta name="user-role" content="<%= user.role %>"><% } %>
+  <% if (typeof user !== 'undefined' && user) { %><meta name="user-role" content="<%= user.role %>">
+  <meta name="csrf-token" content="<%= csrfToken %>">
+  <% if (user.mustChangePassword) { %><meta name="must-change-password" content="1"><% } %><% } %>
   <title><%= typeof title !== 'undefined' ? title + ' - ' : '' %><%= siteName %></title>
   <link rel="stylesheet" href="/css/style.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
   <div class="app-container">
