@@ -185,7 +185,7 @@ function setSetting(key, value) {
 }
 function checkpointDatabase() {
   db.pragma('wal_checkpoint(TRUNCATE)');
-  return { message: '数据库已成功写入主文件' };
+  return { success: true, message: '数据库已成功写入主文件' };
 }
 
 function cleanupAuditLogs(beforeDate) {
