@@ -1,6 +1,15 @@
 let currentPage = 1;
 let currentSort = 'updated_at';
 let currentOrder = 'desc';
+
+function formatMacInput(raw) {
+  if (!raw) return '';
+  const hex = String(raw).replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  if (!hex) return '';
+  if (hex.length !== 12) return hex;
+  return hex.slice(0, 4) + '-' + hex.slice(4, 8) + '-' + hex.slice(8, 12);
+}
+
 let dictionaries = { deviceTypes: [], statuses: [], departments: [], vlanPlans: [] };
 let canEdit = false;
 
@@ -281,7 +290,7 @@ async function saveRecord() {
   const data = {
     vlan: vlanToken,
     ip: ip,
-    mac: document.getElementById('f_mac').value,
+    mac: formatMacInput(document.getElementById('f_mac').value),
     device_type: document.getElementById('f_device_type').value,
     device_name: document.getElementById('f_device_name').value,
     location: document.getElementById('f_location').value,
@@ -358,8 +367,14 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const data = await api('/api/gateway-lookup?ip=' + encodeURIComponent(ip));
       if (data.gateway) document.getElementById('f_gateway').value = data.gateway;
-      if (data.vlan) {
-        const plan = dictionaries.vlanPlans.find(p => p.vlan === data.vlan);
+      if (data.planId) {
+        const byId = dictionaries.vlanPlans.find(p => p.id === Number(data.planId));
+        if (byId) document.getElementById('f_vlan').value = `plan:${byId.id}`;
+      } else if (data.vlan) {
+        // 同一 VLAN 编号多网段：按 IP 所属 CIDR 匹配，避免总是选中第一条
+        const plan = dictionaries.vlanPlans.find(p =>
+          String(p.vlan) === String(data.vlan) && p.subnet && ipInCidrJS(ip, p.subnet)
+        ) || dictionaries.vlanPlans.find(p => String(p.vlan) === String(data.vlan));
         if (plan) document.getElementById('f_vlan').value = `plan:${plan.id}`;
       }
     } catch (e) {}

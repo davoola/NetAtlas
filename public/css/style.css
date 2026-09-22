@@ -781,3 +781,29 @@ body { background: #f6f8fb; color: var(--neutral-800); }
 @media (max-width: 768px) {
   .site-footer { padding: 10px 16px; }
 }
+
+/* import strict-mode checkbox: same-line as dictionary dynamic pool */
+.import-page .form-group.form-checkbox {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+}
+.import-page .form-group.form-checkbox label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--neutral-600);
+  font-size: 13px;
+}
+.import-page .form-group.form-checkbox input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--primary);
+}

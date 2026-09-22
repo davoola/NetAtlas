@@ -100,8 +100,14 @@ function normalizeRegisteredAt(val) {
   return text;
 }
 
-function getPlanByVlan(vlan) {
-  return db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? LIMIT 1').get(String(vlan));
+function getPlanByVlan(vlan, ip) {
+  const plans = db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? ORDER BY sort_order, id').all(String(vlan));
+  if (!plans.length) return null;
+  if (ip) {
+    const matched = plans.find(p => p.subnet && ipService.ipInCidr(ip, p.subnet));
+    if (matched) return matched;
+  }
+  return plans[0];
 }
 
 class ImportRollback extends Error {
@@ -165,7 +171,7 @@ function processRowsInner(rows, req, strategy) {
     }
 
     // Determine if this VLAN is a dynamic IP pool
-    const planForVlan = record.vlan ? getPlanByVlan(record.vlan) : null;
+    const planForVlan = record.vlan ? getPlanByVlan(record.vlan, record.ip) : null;
     const isDynamic = planForVlan && planForVlan.is_dynamic;
 
     if (!isDynamic) {
@@ -212,7 +218,11 @@ function processRowsInner(rows, req, strategy) {
       record.status = '已使用';
     }
 
-    const vlanToken = record.vlan ? `plan:${getPlanIdByVlan(record.vlan)}` : null;
+    // 同一 VLAN 编号可能对应多条网段规划：必须按 IP 所属子网选 plan，不能 LIMIT 1 取第一条
+    const vlanToken = record.vlan ? (() => {
+      const planId = getPlanIdByVlan(record.vlan, record.ip);
+      return planId ? `plan:${planId}` : record.vlan;
+    })() : null;
     if (!canManageVlan(req, vlanToken || record.vlan)) {
       errors.push(`第${i + 2}行: 无权管理VLAN ${record.vlan || '(自动)'}`);
       skip++;
@@ -267,8 +277,8 @@ function processRowsInner(rows, req, strategy) {
   return { success, updated, skip, errors: errors.slice(0, 20), totalErrors: errors.length, allErrors: errors };
 }
 
-function getPlanIdByVlan(vlan) {
-  const plan = db.prepare('SELECT id FROM vlan_plans WHERE vlan = ?').get(String(vlan));
+function getPlanIdByVlan(vlan, ip) {
+  const plan = getPlanByVlan(vlan, ip);
   return plan ? plan.id : null;
 }
 
