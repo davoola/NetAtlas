@@ -43,13 +43,19 @@ function lookupGateway(ip) {
   return row ? row.gateway : null;
 }
 
-function lookupVlanByIp(ip) {
+/** 按 IP 所属子网匹配 VLAN 规划（同一 VLAN 编号可有多条不同网段）。 */
+function lookupPlanByIp(ip) {
   if (!ip) return null;
-  const plans = db.prepare('SELECT vlan, subnet FROM vlan_plans').all();
+  const plans = db.prepare('SELECT * FROM vlan_plans ORDER BY sort_order, id').all();
   for (const plan of plans) {
-    if (plan.subnet && ipInCidr(ip, plan.subnet)) return plan.vlan;
+    if (plan.subnet && ipInCidr(ip, plan.subnet)) return plan;
   }
   return null;
+}
+
+function lookupVlanByIp(ip) {
+  const plan = lookupPlanByIp(ip);
+  return plan ? plan.vlan : null;
 }
 
 function getDuplicateIpSet() {
@@ -60,19 +66,35 @@ function getDuplicateIpSet() {
   return new Set(rows.map(r => r.ip));
 }
 
+/** 用于冲突比较的规范化键：仅保留十六进制并小写。 */
+function macKey(mac) {
+  return String(mac || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+}
+
+/**
+ * 统一 MAC 存储格式：大写，每 4 位一组，用 '-' 连接。
+ * 例：D8CB8AD3E0C3 / d8:cb:8a:d3:e0:c3 / D8-CB-8A-D3-E0-C3 → D8CB-8AD3-E0C3
+ */
 function normalizeMac(mac) {
-  return String(mac || '').trim().toLowerCase();
+  if (mac === null || mac === undefined) return null;
+  const hex = String(mac).replace(/[^0-9a-fA-F]/g, '').toUpperCase();
+  if (!hex) return null;
+  if (hex.length !== 12) return hex; // 非标准长度时仍保存清洗后的大写十六进制
+  return hex.slice(0, 4) + '-' + hex.slice(4, 8) + '-' + hex.slice(8, 12);
 }
 
 function getMacConflictMacSet() {
   const rows = db.prepare(`
-    SELECT lower(trim(mac)) AS normalized_mac
-    FROM ip_records
+    SELECT mac FROM ip_records
     WHERE mac IS NOT NULL AND trim(mac) != ''
-    GROUP BY lower(trim(mac))
-    HAVING COUNT(*) > 1
   `).all();
-  return new Set(rows.map(r => r.normalized_mac));
+  const counts = new Map();
+  for (const r of rows) {
+    const k = macKey(r.mac);
+    if (!k) continue;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  return new Set([...counts.entries()].filter(([, c]) => c > 1).map(([k]) => k));
 }
 
 function listRecords({ page = 1, perPage = 20, search = '', vlan = '', department = '', status = '', deviceType = '', sort = 'updated_at', order = 'desc', scope = null, onlyDuplicate = '', onlyMacConflict = '' }) {
@@ -90,10 +112,22 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   if (vlan) {
     const planMatch = String(vlan).match(/^plan:(\d+)$/);
     if (planMatch) {
-      const plan = db.prepare('SELECT vlan FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
-      if (plan) { where.push('vlan = ?'); params.push(plan.vlan); }
+      // 同一 VLAN 编号可有多条不同网段：按规划 ID 同时限制 vlan 编号与子网范围
+      const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
+      if (plan) {
+        where.push('vlan = ?');
+        params.push(plan.vlan);
+        if (plan.subnet) {
+          const parsed = parseCidr(plan.subnet);
+          if (parsed) {
+            where.push('ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?');
+            params.push(parsed.network, parsed.broadcast);
+          }
+        }
+      }
     } else {
-      where.push('vlan = ?'); params.push(vlan);
+      where.push('vlan = ?');
+      params.push(vlan);
     }
   }
   if (department) { where.push('department = ?'); params.push(department); }
@@ -119,13 +153,20 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
     }
   }
   if (onlyMacConflict === '1') {
-    const conflictMacs = [...getMacConflictMacSet()];
-    if (conflictMacs.length === 0) {
+    const conflictKeys = getMacConflictMacSet();
+    if (conflictKeys.size === 0) {
       where.push('1 = 0');
     } else {
-      const placeholders = conflictMacs.map(() => '?').join(',');
-      where.push(`lower(trim(mac)) IN (${placeholders})`);
-      params.push(...conflictMacs);
+      // 库中可能存在多种历史 MAC 写法：用十六进制键在内存中筛出冲突行 ID
+      const allMacRows = db.prepare("SELECT id, mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != ''").all();
+      const conflictIds = allMacRows.filter(r => conflictKeys.has(macKey(r.mac))).map(r => r.id);
+      if (conflictIds.length === 0) {
+        where.push('1 = 0');
+      } else {
+        const placeholders = conflictIds.map(() => '?').join(',');
+        where.push(`id IN (${placeholders})`);
+        params.push(...conflictIds);
+      }
     }
   }
 
@@ -145,7 +186,7 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
 
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
 
   return { rows, total, page, perPage, totalPages: Math.ceil(total / perPage) };
 }
@@ -234,7 +275,8 @@ function isDynamicVlanToken(vlanToken) {
 function createRecord(data) {
   checkStringFields(data);
   const isDynamic = isDynamicVlanToken(data.vlan);
-  if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
+  if (data.mac !== undefined && data.mac !== null && String(data.mac).trim() !== '') data.mac = normalizeMac(data.mac);
+  else if (data.mac !== undefined) data.mac = null;
   if (!isDynamic) {
     if (!data.ip || !String(data.ip).trim()) {
       throw new Error('IP地址为必填项');
@@ -265,7 +307,8 @@ function createRecord(data) {
 function updateRecord(id, data) {
   checkStringFields(data);
   const existing = getRecord(id);
-  if (data.mac !== undefined && data.mac !== null) data.mac = String(data.mac).trim().toLowerCase();
+  if (data.mac !== undefined && data.mac !== null && String(data.mac).trim() !== '') data.mac = normalizeMac(data.mac);
+  else if (data.mac !== undefined) data.mac = null;
   if (!existing) return null;
   const isDynamic = isDynamicVlanToken(data.vlan || existing.vlan);
   if (!isDynamic) {
@@ -324,8 +367,30 @@ function getDashboardStats(scope = null) {
   const withMac = count("mac IS NOT NULL AND mac != ''");
   const withSunlogin = count("sunlogin_id IS NOT NULL AND sunlogin_id != ''");
   const dupIps = db.prepare(`SELECT COUNT(*) as cnt FROM (SELECT ip FROM ip_records WHERE ip IS NOT NULL AND ip != ''${w.clause} GROUP BY ip HAVING COUNT(*) > 1)`).get(...w.params).cnt;
-  const macConflictIps = db.prepare(`SELECT COUNT(*) as cnt FROM (SELECT lower(trim(mac)) AS mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != ''${w.clause} GROUP BY lower(trim(mac)) HAVING COUNT(*) > 1)`).get(...w.params).cnt;
-  const activeVlans = db.prepare(`SELECT COUNT(DISTINCT vlan) as cnt FROM ip_records WHERE vlan IS NOT NULL AND vlan != ''${w.clause}`).get(...w.params).cnt;
+  // 按规范化十六进制键统计存在冲突的 MAC 种类数
+  const macRowsForKpi = db.prepare(`SELECT mac FROM ip_records WHERE mac IS NOT NULL AND trim(mac) != ''${w.clause}`).all(...w.params);
+  const macCountMap = new Map();
+  for (const r of macRowsForKpi) {
+    const k = macKey(r.mac);
+    if (!k) continue;
+    macCountMap.set(k, (macCountMap.get(k) || 0) + 1);
+  }
+  const macConflictIps = [...macCountMap.values()].filter(c => c > 1).length;
+  // 按「VLAN 规划」计数（同一 VLAN 编号多网段算多条），有登记记录的规划才计入
+  let activeVlans = 0;
+  const plansForKpi = db.prepare('SELECT * FROM vlan_plans').all().filter(p => planInScope(scope, p));
+  for (const plan of plansForKpi) {
+    let cnt = 0;
+    if (plan.subnet) {
+      const parsed = parseCidr(plan.subnet);
+      if (parsed) {
+        cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?').get(plan.vlan, parsed.network, parsed.broadcast).cnt;
+      }
+    } else {
+      cnt = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND vlan IS NOT NULL AND vlan != ''").get(plan.vlan).cnt;
+    }
+    if (cnt > 0) activeVlans += 1;
+  }
 
   return { total, used, reserved, deprecated, withMac, withSunlogin, dupIps, macConflictIps, activeVlans };
 }
@@ -408,7 +473,7 @@ function getSubnetRecords(prefix, sort = 'ip', order = 'asc', vlan = null) {
   }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
   return rows;
 }
 
@@ -427,7 +492,7 @@ function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc', vlan = null) {
   }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
   return rows;
 }
 
@@ -439,13 +504,13 @@ function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
   const rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? ORDER BY ${sortCol} ${sortDir}`).all(vlan);
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(normalizeMac(r.mac)); });
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
   return rows;
 }
 
 module.exports = {
   scopeClause, planInScope,
-  lookupGateway, lookupVlanByIp, getDuplicateIpSet, getMacConflictMacSet, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
+  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
   getSubnetRecords, getSubnetRecordsByCidr, getVlanRecords,

@@ -97,12 +97,15 @@ function addVlanPlan(data) {
   if (!isDynamic && !hasSubnet) throw new Error('网段为必填项');
   if (hasSubnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
   if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new Error('网关IP格式不正确');
+  // 与其它字典一致：新增时 sort_order 自动取当前最大值 + 1
+  const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM vlan_plans').get().m || 0;
+  const sortOrder = maxOrder + 1;
   try {
     db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order, is_dynamic)
       VALUES (?,?,?,?,?,?,?,?,?)`).run(
       data.vlan, data.name || null, data.subnet || null, data.mask || null,
       data.gateway || null, data.description || null, data.address_pool_note || null,
-      data.sort_order || 0, isDynamic
+      sortOrder, isDynamic
     );
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) throw new Error('该VLAN在此网段下的规划已存在');

@@ -57,11 +57,15 @@ router.get('/dict/prefix-gateways', requireAuth, (req, res) => {
 // --- Gateway lookup ---
 router.get('/gateway-lookup', requireAuth, (req, res) => {
   const { ip } = req.query;
-  if (!ip || typeof ip !== 'string' || ip.length > 45) return res.json({ gateway: null, vlan: null });
-  const vlan = ipService.lookupVlanByIp(ip);
+  if (!ip || typeof ip !== 'string' || ip.length > 45) return res.json({ gateway: null, vlan: null, planId: null });
+  const plan = ipService.lookupPlanByIp(ip);
+  const vlan = plan ? plan.vlan : null;
+  const planId = plan ? plan.id : null;
   const scope = getReadableVlanScope(req);
-  if (!scope.all && (!vlan || !scope.vlans.includes(String(vlan)))) return res.json({ gateway: null, vlan: null });
-  res.json({ gateway: ipService.lookupGateway(ip), vlan });
+  if (!scope.all && (!vlan || !scope.vlans.includes(String(vlan)))) {
+    return res.json({ gateway: null, vlan: null, planId: null });
+  }
+  res.json({ gateway: ipService.lookupGateway(ip), vlan, planId });
 });
 
 // --- IP records list ---
