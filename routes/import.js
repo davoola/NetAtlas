@@ -300,7 +300,7 @@ async function handleImport(kind, req, res, next) {
   }
 }
 
-router.post('/excel', requireAuth, requireRole('superadmin', 'admin'), handleUpload, (req, res, next) => handleImport('excel', req, res, next));
-router.post('/csv', requireAuth, requireRole('superadmin', 'admin'), handleUpload, (req, res, next) => handleImport('csv', req, res, next));
+router.post('/excel', requireAuth, requireRole('superadmin'), handleUpload, (req, res, next) => handleImport('excel', req, res, next));
+router.post('/csv', requireAuth, requireRole('superadmin'), handleUpload, (req, res, next) => handleImport('csv', req, res, next));
 
 module.exports = router;

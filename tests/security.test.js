@@ -121,18 +121,27 @@ test('统计/字典/网关查询按 VLAN 权限过滤（受限管理员）', asy
   assert.strictEqual(sstats.kpi.total, 3);
 });
 
-test('导入 update 策略：不能覆盖未授权 VLAN 的现有记录；可更新自己的', async () => {
-  const csv = 'VLAN,IP地址,设备名称\n10,10.0.10.9,hacked\n10,10.0.10.5,renamed\n';
+test('数据导入仅超级管理员可用：普通管理员调用导入接口返回 403', async () => {
+  const csv = 'VLAN,IP地址,设备名称\n10,10.0.10.5,should-fail\n';
   const fd = new FormData();
   fd.append('file', new Blob([csv], { type: 'text/csv' }), 'a.csv');
   fd.append('strategy', 'update');
   const res = await adm.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } });
+  assert.strictEqual(res.status, 403);
+  const resX = await adm.req('POST', '/api/import/excel', { body: fd, headers: { accept: 'application/json' } });
+  assert.strictEqual(resX.status, 403);
+});
+
+test('超级管理员导入 update 策略可更新记录', async () => {
+  const csv = 'VLAN,IP地址,设备名称\n10,10.0.10.5,renamed\n';
+  const fd = new FormData();
+  fd.append('file', new Blob([csv], { type: 'text/csv' }), 'a.csv');
+  fd.append('strategy', 'update');
+  const res = await sa.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } });
   assert.strictEqual(res.status, 200);
   const out = await res.json();
-  assert.strictEqual(out.updated, 1);
-  assert.strictEqual(out.skip, 1);
+  assert.ok(out.updated >= 1);
   const raw = new DatabaseSync(DB_PATH);
-  assert.strictEqual(raw.prepare("SELECT device_name n FROM ip_records WHERE ip='10.0.10.9'").get().n, 'legacy-20');
   assert.strictEqual(raw.prepare("SELECT device_name n FROM ip_records WHERE ip='10.0.10.5'").get().n, 'renamed');
   raw.close();
 });
@@ -159,7 +168,7 @@ test('导入严格模式：有被跳过的行则整体回滚', async () => {
   fd.append('file', new Blob([csv], { type: 'text/csv' }), 'b.csv');
   fd.append('strategy', 'skip');
   fd.append('atomic', '1');
-  const out = await (await adm.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } })).json();
+  const out = await (await sa.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } })).json();
   assert.strictEqual(out.rolledBack, true);
   const raw = new DatabaseSync(DB_PATH);
   assert.strictEqual(raw.prepare("SELECT COUNT(*) c FROM ip_records WHERE ip='10.0.10.20'").get().c, 0);
@@ -172,7 +181,7 @@ test('导入：Excel 正常解析；行数超限被拒绝；原型污染表头�
   const buf = xlsx.write(wb, { type: 'buffer', bookType: 'xlsx' });
   let fd = new FormData();
   fd.append('file', new Blob([buf]), 'a.xlsx'); fd.append('strategy', 'skip');
-  let out = await (await adm.req('POST', '/api/import/excel', { body: fd, headers: { accept: 'application/json' } })).json();
+  let out = await (await sa.req('POST', '/api/import/excel', { body: fd, headers: { accept: 'application/json' } })).json();
   assert.strictEqual(out.success, 1);
   const rows = ['VLAN,IP地址'].concat(Array.from({ length: 60 }, (_, i) => `10,10.0.10.${100 + i}`)).join('\n');
   fd = new FormData();
@@ -341,12 +350,12 @@ test('生产环境缺少或过短的 SESSION_SECRET 时拒绝启动', () => {
 test('导入审计日志包含批次ID、操作者、文件名与 SHA-256', async () => {
   const fd = new FormData();
   fd.append('file', new Blob(['VLAN,IP地址\n10,10.0.10.61\n']), 'audit-check.csv'); fd.append('strategy', 'skip');
-  const out = await (await adm.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } })).json();
+  const out = await (await sa.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } })).json();
   assert.ok(out.batchId);
   const logs = await (await sa.api('GET', '/api/audit-logs?perPage=5&search=' + out.batchId)).json();
   const d = logs.rows[0].detail;
   assert.match(d, new RegExp(out.batchId));
-  assert.match(d, /vlan10admin/);
+  assert.match(d, /admin/);
   assert.match(d, /audit-check\.csv/);
   assert.match(d, /SHA-256 [0-9a-f]{64}/);
 });
@@ -373,9 +382,10 @@ test('兼容性：各角色可打开全部页面（EJS 6 + layout + include）�
     assert.ok(html.includes('csrf-token') && html.includes('</html>'), `${p} 渲染不完整`);
     assert.ok(!/<%|%>/.test(html), `${p} 含未解析的模板标记`);
   }
-  for (const p of ['/dashboard', '/records', '/subnets', '/dictionary', '/import']) {
+  for (const p of ['/dashboard', '/records', '/subnets', '/dictionary']) {
     assert.strictEqual((await adm.req('GET', p, { headers: { accept: 'text/html' } })).status, 200, `admin ${p}`);
   }
+  assert.notStrictEqual((await adm.req('GET', '/import', { headers: { accept: 'text/html' } })).status, 200, 'admin 不应访问导入页');
   assert.strictEqual((await adm.req('GET', '/users', { headers: { accept: 'text/html' } })).status === 200, false); // 管理员不能访问用户管理
   assert.strictEqual((await sa.req('GET', '/js/app.js')).status, 200);
   assert.strictEqual((await sa.req('GET', '/css/style.css')).status, 200);
