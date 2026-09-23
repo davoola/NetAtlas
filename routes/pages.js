@@ -34,7 +34,7 @@ router.get('/users', requireAuth, requireRole('superadmin'), (req, res) => {
   res.render('pages/users', { title: '用户管理', activePage: 'users', extraScript: '/js/users.js' });
 });
 
-router.get('/import', requireAuth, requireRole('superadmin', 'admin'), (req, res) => {
+router.get('/import', requireAuth, requireRole('superadmin'), (req, res) => {
   res.render('pages/import', { title: '数据导入', activePage: 'import', extraScript: '/js/import.js' });
 });
 
