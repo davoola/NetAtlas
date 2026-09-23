@@ -82,9 +82,12 @@
       </div>
       <div class="form-group">
         <label>数据库维护</label>
-        <button class="btn btn-secondary" id="btnCheckpoint">立即写入主数据库文件</button>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn btn-secondary" id="btnCheckpoint">立即写入主数据库文件</button>
+          <button class="btn btn-primary" id="btnBackupDb">备份数据库</button>
+        </div>
         <p style="color:var(--neutral-400);font-size:12px;margin-top:4px">
-          正常情况下系统会自动合并，此按钮用于备份前手动确保数据已完全写入 ipam.db
+          「写入主文件」会将 WAL 合并进主库；「备份数据库」会先执行合并，再复制到 .env 中 BACKUP_DIR 指定的目录，文件名为 原库名-年月日.db（如 ipam-20260923.db）。
         </p>
       </div>
     </div>

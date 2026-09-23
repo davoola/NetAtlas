@@ -199,7 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Hide add buttons for non-superadmin
   if (!canManageDict) {
-    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName, #btnCheckpoint, #btnCleanupAuditLogs').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName, #btnCheckpoint, #btnBackupDb, #btnCleanupAuditLogs').forEach(el => el.style.display = 'none');
     document.getElementById('settingSiteName').readOnly = true;
   }
 
@@ -263,6 +263,21 @@ document.addEventListener('DOMContentLoaded', () => {
         showToast(result.message || '数据库已成功写入主文件', 'success');
       } catch (e) {
         showToast('操作失败: ' + e.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('btnBackupDb').addEventListener('click', async () => {
+      if (!confirm('确认备份数据库？将先合并 WAL，再复制到 BACKUP_DIR 目录。')) return;
+      const btn = document.getElementById('btnBackupDb');
+      btn.disabled = true;
+      try {
+        const result = await api('/api/system/backup', { method: 'POST' });
+        const extra = result.filename ? ('（' + result.filename + '）') : '';
+        showToast((result.message || '备份成功') + extra, 'success');
+      } catch (e) {
+        showToast('备份失败: ' + e.message, 'error');
       } finally {
         btn.disabled = false;
       }
