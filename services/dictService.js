@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const db = require('../db');
 
 function getDeviceTypes() {
@@ -191,6 +193,67 @@ function checkpointDatabase() {
   return { success: true, message: '数据库已成功写入主文件' };
 }
 
+function getDatabaseFilePath() {
+  // 与 db/index.js 保持一致：默认库文件在项目 db/ 目录，而不是 services/
+  if (process.env.DB_PATH && String(process.env.DB_PATH).trim()) {
+    return path.resolve(String(process.env.DB_PATH).trim());
+  }
+  return path.resolve(path.join(__dirname, '..', 'db', 'ipam.db'));
+}
+
+/**
+ * 备份主库到 BACKUP_DIR（.env 配置）。
+ * 先 WAL checkpoint，再复制，保证备份一致。
+ * 文件名：原库名-YYYYMMDD.db；同日重复备份追加 -HHmmss。
+ */
+function backupDatabase() {
+  const backupDirRaw = process.env.BACKUP_DIR;
+  if (!backupDirRaw || !String(backupDirRaw).trim()) {
+    const err = new Error('未配置备份目录，请在 .env 中设置 BACKUP_DIR');
+    err.expose = true;
+    err.status = 400;
+    throw err;
+  }
+
+  const srcPath = getDatabaseFilePath();
+  if (!fs.existsSync(srcPath)) {
+    const err = new Error('数据库文件不存在');
+    err.expose = true;
+    err.status = 500;
+    throw err;
+  }
+
+  const destDir = path.resolve(String(backupDirRaw).trim());
+  fs.mkdirSync(destDir, { recursive: true });
+
+  db.pragma('wal_checkpoint(TRUNCATE)');
+
+  const ext = path.extname(srcPath) || '.db';
+  const base = path.basename(srcPath, ext);
+  const now = new Date();
+  const ymd = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, '0'),
+    String(now.getDate()).padStart(2, '0'),
+  ].join('');
+
+  let filename = base + '-' + ymd + ext;
+  let destPath = path.join(destDir, filename);
+  if (fs.existsSync(destPath)) {
+    const hms = [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0'),
+    ].join('');
+    filename = base + '-' + ymd + '-' + hms + ext;
+    destPath = path.join(destDir, filename);
+  }
+
+  fs.copyFileSync(srcPath, destPath);
+  const size = fs.statSync(destPath).size;
+  return { success: true, message: '数据库备份成功', filename, path: destPath, size };
+}
+
 function cleanupAuditLogs(beforeDate) {
   const result = db.prepare("DELETE FROM audit_log WHERE created_at < datetime(?, 'start of day')").run(beforeDate);
   return result.changes;
@@ -209,5 +272,5 @@ module.exports = {
   getDepartments, addDepartment, updateDepartment, deleteDepartment,
   getVlanPlans, getVlanPlanById, addVlanPlan, updateVlanPlan, deleteVlanPlan,
   getPrefixGateways, addPrefixGateway, updatePrefixGateway, deletePrefixGateway,
-  getSetting, setSetting, checkpointDatabase, cleanupAuditLogs, auditLog,
+  getSetting, setSetting, checkpointDatabase, backupDatabase, cleanupAuditLogs, auditLog,
 };

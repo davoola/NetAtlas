@@ -350,6 +350,22 @@ router.post('/system/checkpoint', requireRole('superadmin'), (req, res) => {
   }
 });
 
+// --- Database backup (superadmin only) ---
+router.post('/system/backup', requireRole('superadmin'), (req, res) => {
+  try {
+    const result = dictService.backupDatabase();
+    dictService.auditLog(
+      req.session.user,
+      'db_backup',
+      '手动备份数据库: ' + result.filename + ' -> ' + result.path,
+      { target_type: 'system' }
+    );
+    res.json(result);
+  } catch (e) {
+    fail(req, res, e, e.status || 500, '数据库备份失败');
+  }
+});
+
 // --- System settings ---
 const ALLOWED_SETTINGS = { site_name: 100 };
 router.get('/settings/:key', requireAuth, (req, res) => {
