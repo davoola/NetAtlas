@@ -1295,6 +1295,14 @@ body.sidebar-collapsed .sidebar-brand-meta { display: none; }
 }
 
 /* ========== Subnet toolbar: select+view left, export right ========== */
+/* Subnet detail summary → table spacing (match records filter→table gap) */
+.subnet-info {
+  margin-bottom: 16px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
 .filter-bar-subnet {
   display: flex;
   align-items: center;
@@ -1656,5 +1664,58 @@ body.sidebar-collapsed .sidebar-brand-meta { display: none; }
   .users-page .table-wrap {
     overflow-x: auto;
   }
+}
+
+
+/* ========== Sortable table headers (records + subnet) ========== */
+#recordsTable th[data-sort],
+#subnetTable th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  padding-right: 22px;
+  position: relative;
+  transition: color 0.15s ease;
+}
+#recordsTable th[data-sort]:hover,
+#subnetTable th[data-sort]:hover {
+  color: var(--text-primary);
+}
+#recordsTable th[data-sort]::after,
+#subnetTable th[data-sort]::after {
+  content: '↕';
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--text-muted);
+  opacity: 0.55;
+  pointer-events: none;
+}
+#recordsTable th[data-sort]:hover::after,
+#subnetTable th[data-sort]:hover::after {
+  opacity: 0.9;
+  color: var(--text-secondary);
+}
+#recordsTable th[data-sort].sort-asc::after,
+#subnetTable th[data-sort].sort-asc::after {
+  content: '↑';
+  color: var(--primary);
+  opacity: 1;
+}
+#recordsTable th[data-sort].sort-desc::after,
+#subnetTable th[data-sort].sort-desc::after {
+  content: '↓';
+  color: var(--primary);
+  opacity: 1;
+}
+html[data-theme="dark"] #recordsTable th[data-sort].sort-asc::after,
+html[data-theme="dark"] #recordsTable th[data-sort].sort-desc::after,
+html[data-theme="dark"] #subnetTable th[data-sort].sort-asc::after,
+html[data-theme="dark"] #subnetTable th[data-sort].sort-desc::after {
+  color: var(--brand);
 }
 
