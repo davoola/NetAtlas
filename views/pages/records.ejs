@@ -1,7 +1,11 @@
 <div class="records-page">
   <div class="page-header">
-    <h2 class="page-title">IP登记台账</h2>
-    <div class="page-actions">
+    <div class="page-title-block">
+      <div class="page-eyebrow">IP REGISTRY</div>
+      <h1 class="page-title">IP登记台账</h1>
+      <p class="page-desc">全网 IP 地址登记与查询管理</p>
+    </div>
+    <div class="page-actions page-actions-split">
       <button class="btn btn-primary" id="btnNewRecord" style="display:none">+ 新增登记</button>
       <button class="btn btn-secondary" id="btnExportRecords">导出CSV</button>
     </div>
@@ -13,14 +17,26 @@
     <select id="filterDept" class="filter-select"><option value="">全部部门</option></select>
     <select id="filterStatus" class="filter-select"><option value="">全部状态</option></select>
     <select id="filterDeviceType" class="filter-select"><option value="">全部设备类型</option></select>
-    <button class="btn btn-secondary" id="btnFilter">筛选</button>
-    <button class="btn btn-ghost" id="btnReset">重置</button>
-    <label class="filter-checkbox" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--neutral-600);cursor:pointer">
-      <input type="checkbox" id="filterDupOnly"> 只看重复IP
-    </label>
-    <label class="filter-checkbox" style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--neutral-600);cursor:pointer">
-      <input type="checkbox" id="filterMacConflictOnly"> 只看MAC冲突
-    </label>
+    <div class="filter-actions">
+      <button class="btn btn-secondary" id="btnFilter">筛选</button>
+      <button class="btn btn-ghost" id="btnReset">重置</button>
+    </div>
+    <div class="filter-chips">
+      <label class="filter-chip" for="filterDupOnly">
+        <input type="checkbox" id="filterDupOnly">
+        <span class="chip-check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span>只看重复IP</span>
+      </label>
+      <label class="filter-chip" for="filterMacConflictOnly">
+        <input type="checkbox" id="filterMacConflictOnly">
+        <span class="chip-check" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span>只看MAC冲突</span>
+      </label>
+    </div>
   </div>
 
   <div class="table-wrap">

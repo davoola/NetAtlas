@@ -134,7 +134,7 @@ function renderRecords(data) {
   updateSortIndicators();
   const tbody = document.getElementById('recordsBody');
   if (data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--neutral-400);padding:40px">暂无数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">暂无数据</td></tr>';
   } else {
     tbody.innerHTML = data.rows.map(r => `
       <tr class="${r.is_duplicate ? 'row-duplicate' : ''} ${r.is_mac_conflict ? 'row-mac-conflict' : ''}">

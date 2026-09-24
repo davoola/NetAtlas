@@ -1,7 +1,11 @@
 <div class="users-page">
   <div class="page-header">
-    <h2 class="page-title">用户管理</h2>
-    <div class="page-actions">
+    <div class="page-title-block">
+      <div class="page-eyebrow">ACCESS CONTROL</div>
+      <h1 class="page-title">用户管理</h1>
+      <p class="page-desc">系统账号与角色权限管理</p>
+    </div>
+    <div class="page-actions page-actions-split">
       <button class="btn btn-primary" id="btnAddUser">+ 新增用户</button>
     </div>
   </div>
@@ -10,14 +14,14 @@
     <table class="data-table" id="usersTable">
       <thead>
         <tr>
-          <th>ID</th>
-          <th>用户名</th>
-          <th>显示名</th>
-          <th>角色</th>
-          <th>状态</th>
-          <th>VLAN权限</th>
-          <th>创建时间</th>
-          <th>操作</th>
+          <th class="col-id">ID</th>
+          <th class="col-username">用户名</th>
+          <th class="col-display">显示名</th>
+          <th class="col-role">角色</th>
+          <th class="col-status">状态</th>
+          <th class="col-vlan">VLAN权限</th>
+          <th class="col-created">创建时间</th>
+          <th class="col-actions">操作</th>
         </tr>
       </thead>
       <tbody id="usersBody"></tbody>

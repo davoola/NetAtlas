@@ -1,5 +1,11 @@
 <div class="dictionary-page">
-  <h2 class="page-title">数据字典维护</h2>
+  <div class="page-header">
+    <div class="page-title-block">
+      <div class="page-eyebrow">DATA DICTIONARY</div>
+      <h1 class="page-title">数据字典维护</h1>
+      <p class="page-desc">设备类型、状态、部门与 VLAN 规划配置</p>
+    </div>
+  </div>
 
   <div class="dict-tabs">
     <button class="dict-tab active" data-tab="device-types">设备类型</button>
@@ -12,7 +18,7 @@
 
   <!-- Device Types -->
   <div class="dict-panel active" id="panel-device-types">
-    <div class="dict-add-row">
+    <div class="dict-add-row dict-add-row-compact">
       <input type="text" id="newDeviceType" placeholder="新设备类型名称">
       <button class="btn btn-primary" data-action="add-dict" data-type="device-types" data-input="newDeviceType">添加</button>
     </div>
@@ -24,7 +30,7 @@
 
   <!-- Statuses -->
   <div class="dict-panel" id="panel-statuses">
-    <div class="dict-add-row">
+    <div class="dict-add-row dict-add-row-compact">
       <input type="text" id="newStatus" placeholder="新状态名称">
       <button class="btn btn-primary" data-action="add-dict" data-type="statuses" data-input="newStatus">添加</button>
     </div>
@@ -36,7 +42,7 @@
 
   <!-- Departments -->
   <div class="dict-panel" id="panel-departments">
-    <div class="dict-add-row">
+    <div class="dict-add-row dict-add-row-compact">
       <input type="text" id="newDept" placeholder="新部门名称">
       <button class="btn btn-primary" data-action="add-dict" data-type="departments" data-input="newDept">添加</button>
     </div>
@@ -48,7 +54,9 @@
 
   <!-- VLAN Plans -->
   <div class="dict-panel" id="panel-vlan-plans">
-    <button class="btn btn-primary" id="btnAddVlan">+ 新增VLAN规划</button>
+    <div class="dict-panel-toolbar">
+      <button class="btn btn-primary" id="btnAddVlan">+ 新增VLAN规划</button>
+    </div>
     <div class="table-wrap">
       <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>说明</th><th>可用地址</th><th>动态池</th><th>排序</th><th>操作</th></tr></thead>
       <tbody id="dictVlanPlans"></tbody></table>
@@ -57,7 +65,9 @@
 
   <!-- Prefix Gateways -->
   <div class="dict-panel" id="panel-prefix-gateways">
-    <button class="btn btn-primary" id="btnAddPrefix">+ 新增网关映射</button>
+    <div class="dict-panel-toolbar">
+      <button class="btn btn-primary" id="btnAddPrefix">+ 新增网关映射</button>
+    </div>
     <div class="table-wrap">
       <table class="data-table"><thead><tr><th>前缀</th><th>网关</th><th>默认VLAN</th><th>操作</th></tr></thead>
       <tbody id="dictPrefixGateways"></tbody></table>
@@ -66,29 +76,29 @@
 
   <!-- System Settings -->
   <div class="dict-panel" id="panel-settings">
-    <div class="settings-form">
-      <div class="form-group">
-        <label>网站名称</label>
-        <input type="text" id="settingSiteName" placeholder="网站名称">
+    <div class="settings-form settings-form-compact">
+      <div class="settings-row">
+        <label class="settings-label" for="settingSiteName">网站名称</label>
+        <input type="text" id="settingSiteName" class="settings-input" placeholder="网站名称">
         <button class="btn btn-primary" id="btnSaveSiteName">保存</button>
       </div>
-      <div class="form-group">
-        <label>审计日志维护</label>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <input type="date" id="auditCleanupBeforeDate" aria-label="清理截止日期">
-          <button class="btn btn-secondary" id="btnCleanupAuditLogs">清理截止日期之前的日志</button>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <label class="settings-label" for="auditCleanupBeforeDate">审计日志</label>
+          <input type="date" id="auditCleanupBeforeDate" class="settings-input settings-input-date" aria-label="清理截止日期">
+          <button class="btn btn-secondary" id="btnCleanupAuditLogs">清理</button>
         </div>
-        <p style="color:var(--neutral-400);font-size:12px;margin-top:4px">仅超级管理员可用，操作会保留一条清理记录。</p>
+        <p class="settings-hint">仅超级管理员可用，操作会保留一条清理记录。</p>
       </div>
-      <div class="form-group">
-        <label>数据库维护</label>
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <button class="btn btn-secondary" id="btnCheckpoint">立即写入主数据库文件</button>
+
+      <div class="settings-block">
+        <div class="settings-row">
+          <label class="settings-label">数据库维护</label>
+          <button class="btn btn-secondary" id="btnCheckpoint">写入主文件</button>
           <button class="btn btn-primary" id="btnBackupDb">备份数据库</button>
         </div>
-        <p style="color:var(--neutral-400);font-size:12px;margin-top:4px">
-          「写入主文件」会将 WAL 合并进主库；「备份数据库」会先执行合并，再复制到 .env 中 BACKUP_DIR 指定的目录，文件名为 原库名-年月日.db（如 ipam-20260923.db）。
-        </p>
+        <p class="settings-hint">「写入主文件」会将 WAL 合并进主库；「备份数据库」会先执行合并，再复制到 .env 中 BACKUP_DIR 指定的目录，文件名为 原库名-年月日.db（如 ipam-20260923.db）。</p>
       </div>
     </div>
   </div>
