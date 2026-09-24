@@ -1,26 +1,82 @@
 <div class="dashboard-page">
-  <h2 class="page-title">仪表板与统计</h2>
+  <div class="page-header">
+    <div class="page-title-block">
+      <div class="page-eyebrow">NETWORK OVERVIEW</div>
+      <h1 class="page-title">仪表板与统计</h1>
+      <p class="page-desc">地址资源与网络使用情况一览</p>
+    </div>
+    <div class="page-actions">
+      <span class="sync-badge">数据状态 已同步</span>
+    </div>
+  </div>
 
   <div class="kpi-grid kpi-grid-two-rows" id="kpiGrid">
-    <div class="kpi-card"><div class="kpi-label">登记总数</div><div class="kpi-value" id="kpi-total">-</div></div>
-    <div class="kpi-card kpi-green"><div class="kpi-label">已使用</div><div class="kpi-value" id="kpi-used">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">有MAC记录</div><div class="kpi-value" id="kpi-mac">-</div></div>
-    <div class="kpi-card kpi-blue"><div class="kpi-label">使用中VLAN数</div><div class="kpi-value" id="kpi-activeVlan">-</div></div>
-    <div class="kpi-card kpi-yellow"><div class="kpi-label">预留/备用</div><div class="kpi-value" id="kpi-reserved">-</div></div>
-    <div class="kpi-card"><div class="kpi-label">有向日葵ID</div><div class="kpi-value" id="kpi-sunlogin">-</div></div>
-    <div class="kpi-card kpi-red"><div class="kpi-label">重复IP数</div><div class="kpi-value" id="kpi-dup">-</div></div>
-    <div class="kpi-card kpi-yellow"><div class="kpi-label">IP-MAC冲突</div><div class="kpi-value" id="kpi-macConflict">-</div></div>
+    <div class="kpi-card">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></div>
+      <div class="kpi-label">登记总数</div>
+      <div class="kpi-value" id="kpi-total">-</div>
+      <div class="kpi-meta"><span class="dot"></span> TOTAL RECORDS</div>
+    </div>
+    <div class="kpi-card kpi-green">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <div class="kpi-label">已使用</div>
+      <div class="kpi-value" id="kpi-used">-</div>
+      <div class="kpi-meta"><span class="dot"></span> IN USE</div>
+    </div>
+    <div class="kpi-card kpi-cyan">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg></div>
+      <div class="kpi-label">有 MAC 记录</div>
+      <div class="kpi-value" id="kpi-mac">-</div>
+      <div class="kpi-meta"><span class="dot"></span> MAC MAPPED</div>
+    </div>
+    <div class="kpi-card kpi-blue">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg></div>
+      <div class="kpi-label">使用中 VLAN 数</div>
+      <div class="kpi-value" id="kpi-activeVlan">-</div>
+      <div class="kpi-meta"><span class="dot"></span> ACTIVE VLANS</div>
+    </div>
+    <div class="kpi-card kpi-yellow">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+      <div class="kpi-label">预留 / 备用</div>
+      <div class="kpi-value" id="kpi-reserved">-</div>
+      <div class="kpi-meta"><span class="dot"></span> RESERVED</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></div>
+      <div class="kpi-label">有向日葵 ID</div>
+      <div class="kpi-value" id="kpi-sunlogin">-</div>
+      <div class="kpi-meta"><span class="dot"></span> REMOTE ID</div>
+    </div>
+    <div class="kpi-card kpi-red">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></div>
+      <div class="kpi-label">重复 IP 数</div>
+      <div class="kpi-value" id="kpi-dup">-</div>
+      <div class="kpi-meta"><span class="dot"></span> DUPLICATES</div>
+    </div>
+    <div class="kpi-card kpi-yellow">
+      <div class="kpi-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></div>
+      <div class="kpi-label">IP-MAC 冲突</div>
+      <div class="kpi-value" id="kpi-macConflict">-</div>
+      <div class="kpi-meta"><span class="dot"></span> CONFLICTS</div>
+    </div>
   </div>
 
   <div class="dashboard-sections">
     <div class="dashboard-section">
-      <h3 class="section-title">VLAN / 网段统计</h3>
+      <div class="section-header">
+        <h3 class="section-title">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
+          VLAN / 网段统计
+          <span class="badge-count" id="vlanCountBadge">0</span>
+        </h3>
+        <span class="text-muted" style="font-size:12px">网络地址空间利用情况</span>
+      </div>
       <div class="table-wrap">
         <table class="data-table" id="vlanStatsTable">
           <thead>
             <tr>
               <th>VLAN</th>
-              <th>网段/名称</th>
+              <th>网段 / 名称</th>
               <th>子网掩码</th>
               <th>网关</th>
               <th>已用</th>
@@ -37,11 +93,23 @@
 
     <div class="dashboard-row">
       <div class="dashboard-section half">
-        <h3 class="section-title">按部门统计</h3>
+        <div class="section-header">
+          <h3 class="section-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+            按部门统计
+          </h3>
+          <span class="text-muted" style="font-size:12px">地址资源在各部门的分布</span>
+        </div>
         <div class="stat-list" id="deptStats"></div>
       </div>
       <div class="dashboard-section half">
-        <h3 class="section-title">按设备类型统计</h3>
+        <div class="section-header">
+          <h3 class="section-title">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            按设备类型统计
+          </h3>
+          <span class="text-muted" style="font-size:12px">已登记设备类型分布</span>
+        </div>
         <div class="stat-list" id="deviceStats"></div>
       </div>
     </div>

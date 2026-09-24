@@ -1,6 +1,10 @@
-<div class="records-page">
+<div class="audit-page">
   <div class="page-header">
-    <h2 class="page-title">操作审计日志</h2>
+    <div class="page-title-block">
+      <div class="page-eyebrow">AUDIT LOG</div>
+      <h1 class="page-title">审计日志</h1>
+      <p class="page-desc">系统操作与变更记录追溯</p>
+    </div>
   </div>
 
   <div class="filter-bar">
@@ -19,8 +23,10 @@
       <option value="import">数据导入</option>
       <option value="settings">系统配置</option>
     </select>
-    <button class="btn btn-secondary" id="btnAuditFilter">筛选</button>
-    <button class="btn btn-ghost" id="btnAuditReset">重置</button>
+    <div class="filter-actions">
+      <button class="btn btn-secondary" id="btnAuditFilter">筛选</button>
+      <button class="btn btn-ghost" id="btnAuditReset">重置</button>
+    </div>
   </div>
 
   <div class="table-wrap">

@@ -15,10 +15,14 @@ async function loadUsers() {
         return plan ? planLabel(plan) : token;
       }).join(', ') || '-';
       return `<tr>
-        <td>${u.id}</td><td>${escapeHtml(u.username)}</td><td>${escapeHtml(u.display_name||'-')}</td>
-        <td><span class="role-badge role-${u.role}">${roleText}</span></td><td>${statusText}</td>
-        <td>${escapeHtml(perms)}</td><td>${escapeHtml(u.created_at||'-')}</td>
-        <td class="action-cell">
+        <td class="col-id">${u.id}</td>
+        <td class="col-username">${escapeHtml(u.username)}</td>
+        <td class="col-display">${escapeHtml(u.display_name||'-')}</td>
+        <td class="col-role"><span class="role-badge role-${u.role}">${roleText}</span></td>
+        <td class="col-status">${statusText}</td>
+        <td class="col-vlan">${escapeHtml(perms)}</td>
+        <td class="col-created">${escapeHtml(u.created_at||'-')}</td>
+        <td class="col-actions action-cell">
           <button class="btn btn-sm btn-secondary" data-action="edit-user" data-id="${u.id}">编辑</button>
           <button class="btn btn-sm btn-secondary" data-action="reset-pwd" data-id="${u.id}">重置密码</button>
           <button class="btn btn-sm btn-danger" data-action="del-user" data-id="${u.id}">删除</button>

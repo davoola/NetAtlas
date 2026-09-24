@@ -5,7 +5,7 @@ function showToast(message, type = 'info') {
   const container = document.getElementById('toastContainer');
   if (!container) return;
   const toast = document.createElement('div');
-  toast.className = `toast toast-${type}`;
+  toast.className = `toast ${type}`;
   toast.textContent = message;
   container.appendChild(toast);
   setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); }, 3000);
@@ -62,7 +62,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const mainContent = document.getElementById('mainContent');
   if (!sidebar) return;
 
-  const isMobile = () => window.matchMedia('(max-width: 768px)').matches;
+  const isMobile = () => window.matchMedia('(max-width: 1024px)').matches;
   const closeMobile = () => {
     sidebar.classList.remove('show');
     if (overlay) overlay.classList.remove('show');
@@ -138,3 +138,19 @@ document.addEventListener('DOMContentLoaded', () => {
     modalObserver.observe(document.body, { childList: true, subtree: true });
   }
 });
+
+// Theme handled by /js/theme-toggle.js (loaded in <head>)
+
+// --- Filter chip visual state (fallback when :has is unavailable) ---
+document.addEventListener('change', (e) => {
+  const input = e.target;
+  if (!input || input.type !== 'checkbox') return;
+  const chip = input.closest('.filter-chip');
+  if (chip) chip.classList.toggle('is-checked', input.checked);
+});
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.filter-chip input[type="checkbox"]').forEach(input => {
+    input.closest('.filter-chip')?.classList.toggle('is-checked', input.checked);
+  });
+});
+

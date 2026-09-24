@@ -1,16 +1,20 @@
 <div class="subnets-page">
   <div class="page-header">
-    <h2 class="page-title">网段使用明细</h2>
-    <div class="page-actions">
-      <button class="btn btn-secondary" id="btnExportSubnet" style="display:none">导出CSV</button>
+    <div class="page-title-block">
+      <div class="page-eyebrow">SUBNET DETAILS</div>
+      <h1 class="page-title">网段明细</h1>
+      <p class="page-desc">按网段查看 IP 占用与空闲地址</p>
     </div>
   </div>
 
-  <div class="filter-bar">
-    <select id="subnetSelect" class="filter-select">
-      <option value="">请选择网段</option>
-    </select>
-    <button class="btn btn-primary" id="btnViewSubnet">查看明细</button>
+  <div class="filter-bar filter-bar-subnet">
+    <div class="subnet-toolbar-left">
+      <select id="subnetSelect" class="filter-select">
+        <option value="">请选择网段</option>
+      </select>
+      <button class="btn btn-primary" id="btnViewSubnet">查看明细</button>
+    </div>
+    <button class="btn btn-secondary" id="btnExportSubnet" style="display:none">导出CSV</button>
   </div>
 
   <div id="subnetResult" style="display:none">
