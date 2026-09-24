@@ -52,7 +52,7 @@
         <span class="network-status-badge">正常</span>
       </div>
       <div class="network-status-meta">
-        <span class="network-status-count" id="sidebarVlanCount">05</span>
+        <span class="network-status-count" id="sidebarVlanCount"><%= String(typeof activeVlanCount !== 'undefined' ? activeVlanCount : 0).padStart(2, '0') %></span>
         <span class="network-status-unit">/ VLANs</span>
       </div>
       <div class="network-status-chart" aria-hidden="true">
@@ -64,7 +64,7 @@
     </div>
     <div class="sidebar-brand-meta">
       <img src="/logo/logo.png" alt="" class="sidebar-brand-meta-logo" width="16" height="16">
-      <span>NetAtlas / v2.4.0</span>
+      <span>NetAtlas | v4.0.4</span>
     </div>
   </div>
 </aside>

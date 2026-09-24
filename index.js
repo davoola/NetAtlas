@@ -89,6 +89,7 @@ app.use((req, res, next) => {
   res.locals.user = req.session.user || null;
   res.locals.activePage = '';
   res.locals.extraScript = null;
+  res.locals.activeVlanCount = 0;
   next();
 });
 
