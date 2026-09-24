@@ -153,4 +153,3 @@ document.addEventListener('DOMContentLoaded', () => {
     input.closest('.filter-chip')?.classList.toggle('is-checked', input.checked);
   });
 });
-

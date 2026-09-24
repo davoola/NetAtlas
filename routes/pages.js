@@ -1,12 +1,24 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, getReadableVlanScope } = require('../middleware/auth');
 const dictService = require('../services/dictService');
+const ipService = require('../services/ipService');
 const { DEFAULT_SITE_NAME } = require('../config/site');
 
 router.use((req, res, next) => {
   res.locals.siteName = dictService.getSetting('site_name', DEFAULT_SITE_NAME);
   res.locals.user = req.session.user;
+  // Server-render active VLAN count for sidebar (same scope as /api/stats)
+  res.locals.activeVlanCount = 0;
+  if (req.session.user) {
+    try {
+      const scope = getReadableVlanScope(req);
+      const kpi = ipService.getDashboardStats(scope);
+      res.locals.activeVlanCount = (kpi && kpi.activeVlans) ? kpi.activeVlans : 0;
+    } catch (e) {
+      res.locals.activeVlanCount = 0;
+    }
+  }
   next();
 });
 
