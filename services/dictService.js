@@ -92,6 +92,26 @@ function getVlanPlans() {
 function getVlanPlanById(id) {
   return db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(Number(id));
 }
+function normalizeVlanIpv6Fields(data) {
+  const enableIpv6 = data.enable_ipv6 ? 1 : 0;
+  let ipv6Subnet = data.ipv6_subnet ? String(data.ipv6_subnet).trim() : '';
+  let ipv6Gateway = data.ipv6_gateway ? String(data.ipv6_gateway).trim() : '';
+  if (!enableIpv6) {
+    ipv6Subnet = '';
+    ipv6Gateway = '';
+  } else {
+    if (!ipv6Subnet) throw new Error('启用 IPv6 时必须填写 IPv6 网段');
+    const ipService = require('./ipService');
+    if (!ipService.isValidIpv6Cidr(ipv6Subnet)) {
+      throw new Error('IPv6 网段格式不正确，应为如 2002:260:5501:102::/64');
+    }
+    if (ipv6Gateway && !ipService.isValidIpv6(ipv6Gateway)) {
+      throw new Error('IPv6 网关格式不正确');
+    }
+  }
+  return { enableIpv6, ipv6Subnet: ipv6Subnet || null, ipv6Gateway: ipv6Gateway || null };
+}
+
 function addVlanPlan(data) {
   if (!data.vlan || !String(data.vlan).trim()) throw new Error('VLAN编号为必填项');
   const isDynamic = data.is_dynamic ? 1 : 0;
@@ -99,15 +119,16 @@ function addVlanPlan(data) {
   if (!isDynamic && !hasSubnet) throw new Error('网段为必填项');
   if (hasSubnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
   if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new Error('网关IP格式不正确');
+  const { enableIpv6, ipv6Subnet, ipv6Gateway } = normalizeVlanIpv6Fields(data);
   // 与其它字典一致：新增时 sort_order 自动取当前最大值 + 1
   const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM vlan_plans').get().m || 0;
   const sortOrder = maxOrder + 1;
   try {
-    db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order, is_dynamic)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order, is_dynamic, enable_ipv6, ipv6_subnet, ipv6_gateway)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       data.vlan, data.name || null, data.subnet || null, data.mask || null,
       data.gateway || null, data.description || null, data.address_pool_note || null,
-      sortOrder, isDynamic
+      sortOrder, isDynamic, enableIpv6, ipv6Subnet, ipv6Gateway
     );
   } catch (e) {
     if (String(e.message).includes('UNIQUE')) throw new Error('该VLAN在此网段下的规划已存在');
@@ -124,11 +145,12 @@ function updateVlanPlan(id, data) {
   if (!isDynamic && !hasSubnet) throw new Error('网段为必填项');
   if (hasSubnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(String(data.subnet))) throw new Error('网段格式不正确，应为如 192.168.10.0/24');
   if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new Error('网关IP格式不正确');
+  const { enableIpv6, ipv6Subnet, ipv6Gateway } = normalizeVlanIpv6Fields(data);
   db.transaction(() => {
-    db.prepare(`UPDATE vlan_plans SET vlan=?, name=?, subnet=?, mask=?, gateway=?, description=?, address_pool_note=?, sort_order=?, is_dynamic=? WHERE id=?`).run(
+    db.prepare(`UPDATE vlan_plans SET vlan=?, name=?, subnet=?, mask=?, gateway=?, description=?, address_pool_note=?, sort_order=?, is_dynamic=?, enable_ipv6=?, ipv6_subnet=?, ipv6_gateway=? WHERE id=?`).run(
       data.vlan, data.name || null, data.subnet || null, data.mask || null,
       data.gateway || null, data.description || null, data.address_pool_note || null,
-      data.sort_order || 0, isDynamic, id
+      data.sort_order || 0, isDynamic, enableIpv6, ipv6Subnet, ipv6Gateway, id
     );
     if (old.vlan !== data.vlan) db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=?').run(data.vlan, old.vlan);
   });

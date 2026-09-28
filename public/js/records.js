@@ -13,6 +13,96 @@ function formatMacInput(raw) {
 let dictionaries = { deviceTypes: [], statuses: [], departments: [], vlanPlans: [] };
 let canEdit = false;
 
+function getPlanByToken(token) {
+  if (!token) return null;
+  const m = String(token).match(/^plan:(\d+)$/);
+  if (m) return dictionaries.vlanPlans.find(p => p.id === Number(m[1])) || null;
+  return dictionaries.vlanPlans.find(p => p.vlan === token) || null;
+}
+
+function planSupportsIpv6(token) {
+  const plan = getPlanByToken(token);
+  return !!(plan && plan.enable_ipv6);
+}
+
+function setRecordsIpv6ColumnVisible(show) {
+  document.querySelectorAll('#recordsTable th[data-sort="ipv6"], #recordsTable .col-ipv6').forEach(el => {
+    el.style.display = show ? '' : 'none';
+  });
+}
+
+
+function expandIpv6JS(addr) {
+  if (!addr || typeof addr !== 'string') return null;
+  let s = addr.trim().toLowerCase();
+  if (s.includes('%')) s = s.split('%')[0];
+  if (s.includes('/')) return null;
+  if (!/^[0-9a-f:]+$/.test(s)) return null;
+  if (s.includes(':::') || (s.match(/::/g) || []).length > 1) return null;
+  let head, tail;
+  if (s.includes('::')) {
+    const parts = s.split('::');
+    head = parts[0] ? parts[0].split(':') : [];
+    tail = parts[1] ? parts[1].split(':') : [];
+  } else {
+    head = s.split(':');
+    tail = [];
+  }
+  head = head.filter(x => x !== '');
+  tail = tail.filter(x => x !== '');
+  if (head.some(h => h.length > 4) || tail.some(h => h.length > 4)) return null;
+  if (head.some(h => !/^[0-9a-f]{1,4}$/.test(h)) || tail.some(h => !/^[0-9a-f]{1,4}$/.test(h))) return null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) return null;
+  if (!s.includes('::') && missing !== 0) return null;
+  const mid = Array(Math.max(missing, 0)).fill('0000');
+  const groups = [...head, ...mid, ...tail].map(h => h.padStart(4, '0'));
+  return groups.length === 8 ? groups : null;
+}
+
+function ipv6InCidrJS(addr, cidr) {
+  if (!cidr || typeof cidr !== 'string') return false;
+  const m = cidr.trim().match(/^(.+?)\/(\d{1,3})$/);
+  if (!m) return false;
+  const prefix = parseInt(m[2], 10);
+  if (prefix < 0 || prefix > 128) return false;
+  const gNet = expandIpv6JS(m[1]);
+  const gIp = expandIpv6JS(addr);
+  if (!gNet || !gIp) return false;
+  if (typeof BigInt === 'undefined') {
+    // Fallback: compare full hextets for multiples of 16
+    const full = Math.floor(prefix / 16);
+    for (let i = 0; i < full; i++) if (gNet[i] !== gIp[i]) return false;
+    const rem = prefix % 16;
+    if (rem === 0) return true;
+    const mask = 0xffff ^ ((1 << (16 - rem)) - 1);
+    return (parseInt(gNet[full], 16) & mask) === (parseInt(gIp[full], 16) & mask);
+  }
+  let net = 0n, ip = 0n;
+  for (const h of gNet) net = (net << 16n) + BigInt(parseInt(h, 16));
+  for (const h of gIp) ip = (ip << 16n) + BigInt(parseInt(h, 16));
+  if (prefix === 0) return true;
+  const shift = 128n - BigInt(prefix);
+  return (ip >> shift) === (net >> shift);
+}
+
+function getVlanIpv6Subnet(token) {
+  const plan = getPlanByToken(token);
+  return plan && plan.enable_ipv6 ? (plan.ipv6_subnet || '') : '';
+}
+
+function updateRecordFormIpv6Visibility() {
+  const token = document.getElementById('f_vlan').value;
+  const show = planSupportsIpv6(token);
+  const group = document.getElementById('fIpv6Group');
+  if (group) group.style.display = show ? '' : 'none';
+  if (!show) {
+    const inp = document.getElementById('f_ipv6');
+    if (inp) inp.value = '';
+  }
+}
+
+
 async function loadDictionaries() {
   try {
     const [dt, st, dep, vp] = await Promise.all([
@@ -133,12 +223,15 @@ function formatDisplayDate(value) {
 function renderRecords(data) {
   updateSortIndicators();
   const tbody = document.getElementById('recordsBody');
+  const showIpv6 = planSupportsIpv6(document.getElementById('filterVlan').value);
+  setRecordsIpv6ColumnVisible(showIpv6);
   if (data.rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:40px">暂无数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="' + (showIpv6 ? 8 : 7) + '" style="text-align:center;color:var(--text-muted);padding:40px">暂无数据</td></tr>';
   } else {
     tbody.innerHTML = data.rows.map(r => `
       <tr class="${r.is_duplicate ? 'row-duplicate' : ''} ${r.is_mac_conflict ? 'row-mac-conflict' : ''}">
         <td>${escapeHtml(r.ip || '-')} ${r.is_duplicate ? '<span class="dup-badge">重复</span>' : ''} ${r.is_mac_conflict ? '<span class="mac-conflict-badge">MAC冲突</span>' : ''}</td>
+        <td class="col-ipv6" style="display:${showIpv6 ? '' : 'none'}">${escapeHtml(r.ipv6 || '-')}</td>
         <td>${escapeHtml(r.mac || '-')}</td>
         <td>${escapeHtml(r.device_name || '-')}</td>
         <td>${escapeHtml(r.department || '-')}</td>
@@ -196,7 +289,7 @@ async function viewRecord(id) {
   try {
     const r = await api(`/api/records/${id}`);
     const fields = [
-      ['ID', r.id], ['IP地址', r.ip], ['VLAN', r.vlan], ['MAC地址', r.mac],
+      ['ID', r.id], ['IP地址', r.ip], ['IPv6地址', r.ipv6], ['VLAN', r.vlan], ['MAC地址', r.mac],
       ['设备类型', r.device_type], ['设备名称', r.device_name], ['物理位置', r.location],
       ['所属部门', r.department], ['使用人', r.user_name], ['使用状态', r.status],
       ['登记日期', formatDisplayDate(r.registered_at)], ['上层交换机', r.upper_switch],
@@ -219,9 +312,13 @@ async function editRecord(id) {
     const record = await api(`/api/records/${id}`);
     document.getElementById('modalTitle').textContent = '编辑IP登记';
     document.getElementById('recordId').value = record.id;
-    const matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan && p.subnet && record.ip && ipInCidrJS(record.ip, p.subnet));
+    let matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan && p.subnet && record.ip && ipInCidrJS(record.ip, p.subnet));
+    if (!matchingPlan) matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan && p.enable_ipv6 && record.ipv6);
+    if (!matchingPlan) matchingPlan = dictionaries.vlanPlans.find(p => p.vlan === record.vlan);
     document.getElementById('f_vlan').value = matchingPlan ? `plan:${matchingPlan.id}` : (record.vlan || '');
     document.getElementById('f_ip').value = record.ip || '';
+    document.getElementById('f_ipv6').value = record.ipv6 || '';
+    updateRecordFormIpv6Visibility();
     document.getElementById('f_mac').value = record.mac || '';
     document.getElementById('f_device_type').value = record.device_type || '';
     document.getElementById('f_device_name').value = record.device_name || '';
@@ -259,6 +356,7 @@ function openNewModal() {
   document.getElementById('recordForm').reset();
   document.getElementById('recordId').value = '';
   document.getElementById('f_registered_at').value = new Date().toISOString().slice(0, 10);
+  updateRecordFormIpv6Visibility();
   document.getElementById('recordModal').classList.add('show');
 }
 
@@ -287,9 +385,21 @@ async function saveRecord() {
     }
   }
 
+  const ipv6 = document.getElementById('f_ipv6') ? document.getElementById('f_ipv6').value.trim() : '';
+  if (planSupportsIpv6(vlanToken) && ipv6) {
+    if (!expandIpv6JS(ipv6)) {
+      return showToast('IPv6 地址格式不正确', 'error');
+    }
+    const v6net = getVlanIpv6Subnet(vlanToken);
+    if (v6net && !ipv6InCidrJS(ipv6, v6net)) {
+      return showToast(`IPv6 地址必须在所选 VLAN 网段（${v6net}）范围内`, 'error');
+    }
+  }
+
   const data = {
     vlan: vlanToken,
     ip: ip,
+    ipv6: planSupportsIpv6(vlanToken) ? ipv6 : '',
     mac: formatMacInput(document.getElementById('f_mac').value),
     device_type: document.getElementById('f_device_type').value,
     device_name: document.getElementById('f_device_name').value,
@@ -380,13 +490,38 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (e) {}
   });
 
+  const fIpv6El = document.getElementById('f_ipv6');
+  if (fIpv6El) {
+    fIpv6El.addEventListener('blur', function() {
+      const v = this.value.trim();
+      if (!v) return;
+      if (!expandIpv6JS(v)) {
+        showToast('IPv6 地址格式不正确', 'warning');
+        return;
+      }
+      const token = document.getElementById('f_vlan').value;
+      const v6net = getVlanIpv6Subnet(token);
+      if (v6net && !ipv6InCidrJS(v, v6net)) {
+        showToast(`IPv6 地址必须在所选 VLAN 网段（${v6net}）范围内`, 'warning');
+      }
+    });
+  }
+
   // When VLAN changes, validate IP against CIDR and auto-fill gateway
   document.getElementById('f_vlan').addEventListener('change', function() {
+    updateRecordFormIpv6Visibility();
     const subnet = getVlanSubnet(this.value);
     const ipInput = document.getElementById('f_ip');
     if (subnet && ipInput.value.trim()) {
       if (!ipInCidrJS(ipInput.value.trim(), subnet)) {
         showToast(`IP地址应在所选VLAN网段（${subnet}）范围内`, 'warning');
+      }
+    }
+    const v6net = getVlanIpv6Subnet(this.value);
+    const v6Input = document.getElementById('f_ipv6');
+    if (v6net && v6Input && v6Input.value.trim()) {
+      if (!expandIpv6JS(v6Input.value.trim()) || !ipv6InCidrJS(v6Input.value.trim(), v6net)) {
+        showToast(`IPv6 地址应在所选 VLAN 网段（${v6net}）范围内`, 'warning');
       }
     }
     // Auto-fill gateway from prefix gateway mapping

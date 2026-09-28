@@ -2,13 +2,13 @@ const { UserError } = require('./errors');
 
 // 字段长度上限（字符数）。仅在写入时校验，不影响既有数据的读取。
 const RECORD_LIMITS = {
-  vlan: 50, ip: 45, mac: 64, device_type: 100, device_name: 200, location: 200,
+  vlan: 50, ip: 45, ipv6: 64, mac: 64, device_type: 100, device_name: 200, location: 200,
   department: 100, user_name: 100, remark: 1000, status: 50, registered_at: 32,
   upper_switch: 100, switch_port: 100, sunlogin_id: 100, gateway: 45,
 };
 
 const FIELD_LABELS = {
-  vlan: 'VLAN', ip: 'IP地址', mac: 'MAC地址', device_type: '设备类型', device_name: '设备名称',
+  vlan: 'VLAN', ip: 'IP地址', ipv6: 'IPv6地址', mac: 'MAC地址', device_type: '设备类型', device_name: '设备名称',
   location: '物理位置', department: '部门', user_name: '使用人', remark: '备注', status: '状态',
   registered_at: '登记日期', upper_switch: '上层交换机', switch_port: '交换机端口',
   sunlogin_id: '向日葵ID', gateway: '网关',

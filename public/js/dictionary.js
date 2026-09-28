@@ -32,7 +32,9 @@ async function loadDictVlanPlans() {
   const items = await api('/api/dict/vlan-plans');
   document.getElementById('dictVlanPlans').innerHTML = items.map(d => `
     <tr><td>${escapeHtml(d.vlan)}</td><td>${escapeHtml(d.name||'-')}</td><td>${escapeHtml(d.subnet||'-')}</td>
-    <td>${escapeHtml(d.mask||'-')}</td><td>${escapeHtml(d.gateway||'-')}</td><td>${escapeHtml(d.description||'-')}</td>
+    <td>${escapeHtml(d.mask||'-')}</td><td>${escapeHtml(d.gateway||'-')}</td>
+    <td>${d.enable_ipv6 ? '是' : '否'}</td><td>${escapeHtml(d.ipv6_subnet||'-')}</td>
+    <td>${escapeHtml(d.description||'-')}</td>
     <td>${escapeHtml(d.address_pool_note||'-')}</td><td>${d.is_dynamic ? '是' : '否'}</td><td>${d.sort_order}</td>
     ${canManageDict ? `<td><button class="btn btn-sm btn-secondary" data-action="edit" data-type="vlan-plans" data-id="${d.id}">编辑</button>
     <button class="btn btn-sm btn-danger" data-action="delete" data-type="vlan-plans" data-id="${d.id}">删除</button></td>` : '<td>-</td>'}</tr>`).join('');
@@ -96,6 +98,19 @@ function reloadDict(type) {
 }
 
 // VLAN plan modal
+function toggleVlanIpv6Fields() {
+  const on = document.getElementById('vp_enable_ipv6').checked;
+  document.querySelectorAll('.ipv6-plan-fields').forEach(el => {
+    el.style.display = on ? '' : 'none';
+  });
+  if (!on) {
+    const s = document.getElementById('vp_ipv6_subnet');
+    const g = document.getElementById('vp_ipv6_gateway');
+    if (s) s.value = '';
+    if (g) g.value = '';
+  }
+}
+
 async function editVlanPlan(id) {
   const plans = await api('/api/dict/vlan-plans');
   const p = plans.find(x => x.id === id);
@@ -111,6 +126,10 @@ async function editVlanPlan(id) {
   document.getElementById('vp_address_pool_note').value = p.address_pool_note || '';
   document.getElementById('vp_sort_order').value = p.sort_order || 0;
   document.getElementById('vp_is_dynamic').checked = !!p.is_dynamic;
+  document.getElementById('vp_enable_ipv6').checked = !!p.enable_ipv6;
+  document.getElementById('vp_ipv6_subnet').value = p.ipv6_subnet || '';
+  document.getElementById('vp_ipv6_gateway').value = p.ipv6_gateway || '';
+  toggleVlanIpv6Fields();
   document.getElementById('vlanModal').classList.add('show');
 };
 
@@ -130,11 +149,15 @@ async function saveVlanPlan() {
     address_pool_note: document.getElementById('vp_address_pool_note').value.trim(),
     sort_order: parseInt(document.getElementById('vp_sort_order').value) || 0,
     is_dynamic: document.getElementById('vp_is_dynamic').checked ? 1 : 0,
+    enable_ipv6: document.getElementById('vp_enable_ipv6').checked ? 1 : 0,
+    ipv6_subnet: document.getElementById('vp_ipv6_subnet').value.trim(),
+    ipv6_gateway: document.getElementById('vp_ipv6_gateway').value.trim(),
   };
   if (!data.vlan) { if (btn) btn.disabled = false; return showToast('VLAN编号不能为空', 'error'); }
   if (!data.is_dynamic && !data.subnet) { if (btn) btn.disabled = false; return showToast('网段不能为空（动态IP池可不填）', 'error'); }
   if (data.subnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(data.subnet)) { if (btn) btn.disabled = false; return showToast('网段格式不正确，应为如 192.168.10.0/24', 'error'); }
   if (data.gateway && !/^\d{1,3}(\.\d{1,3}){3}$/.test(data.gateway)) { if (btn) btn.disabled = false; return showToast('网关IP格式不正确', 'error'); }
+  if (data.enable_ipv6 && !data.ipv6_subnet) { if (btn) btn.disabled = false; return showToast('启用 IPv6 时请填写 IPv6 网段', 'error'); }
   try {
     if (id) {
       await api(`/api/dict/vlan-plans/${id}`, { method: 'PUT', body: JSON.stringify(data) });
@@ -217,9 +240,11 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('vlanModalTitle').textContent = '新增VLAN规划';
       document.getElementById('vlanForm').reset();
       document.getElementById('vlanPlanId').value = '';
+      toggleVlanIpv6Fields();
       document.getElementById('vlanModal').classList.add('show');
     });
     document.getElementById('btnSaveVlan').addEventListener('click', saveVlanPlan);
+    document.getElementById('vp_enable_ipv6').addEventListener('change', toggleVlanIpv6Fields);
 
     document.getElementById('btnAddPrefix').addEventListener('click', () => {
       document.getElementById('prefixModalTitle').textContent = '新增网关映射';

@@ -34,6 +34,82 @@ function ipInCidr(ip, cidr) {
   return intIp >= parsed.network && intIp <= parsed.broadcast;
 }
 
+/** Expand IPv6 to 8 zero-padded hextets; returns array or null. */
+function expandIpv6(addr) {
+  if (!addr || typeof addr !== 'string') return null;
+  let s = addr.trim().toLowerCase();
+  if (s.includes('%')) s = s.split('%')[0]; // zone id
+  if (s.includes('/')) return null;
+  if (!/^[0-9a-f:]+$/.test(s)) return null;
+  if (s.includes(':::') || (s.match(/::/g) || []).length > 1) return null;
+  let head, tail;
+  if (s.includes('::')) {
+    const parts = s.split('::');
+    head = parts[0] ? parts[0].split(':') : [];
+    tail = parts[1] ? parts[1].split(':') : [];
+  } else {
+    head = s.split(':');
+    tail = [];
+  }
+  head = head.filter(x => x !== '');
+  tail = tail.filter(x => x !== '');
+  if (head.some(h => h.length > 4) || tail.some(h => h.length > 4)) return null;
+  if (head.some(h => !/^[0-9a-f]{1,4}$/.test(h)) || tail.some(h => !/^[0-9a-f]{1,4}$/.test(h))) return null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) return null;
+  if (!s.includes('::') && missing !== 0) return null;
+  if (s.includes('::') && missing === 0 && head.length + tail.length !== 8) return null;
+  const mid = Array(Math.max(missing, 0)).fill('0000');
+  const groups = [...head, ...mid, ...tail].map(h => h.padStart(4, '0'));
+  if (groups.length !== 8) return null;
+  return groups;
+}
+
+function isValidIpv6(addr) {
+  return expandIpv6(addr) !== null;
+}
+
+function ipv6SortKey(addr) {
+  const g = expandIpv6(addr);
+  return g ? g.join('') : null;
+}
+
+function isValidIpv6Cidr(cidr) {
+  if (!cidr || typeof cidr !== 'string') return false;
+  const m = cidr.trim().match(/^(.+?)\/(\d{1,3})$/);
+  if (!m) return false;
+  const prefix = parseInt(m[2], 10);
+  if (prefix < 0 || prefix > 128) return false;
+  return isValidIpv6(m[1]);
+}
+
+/** Convert expanded IPv6 to BigInt for prefix comparison. */
+function ipv6ToBigInt(addr) {
+  const groups = expandIpv6(addr);
+  if (!groups) return null;
+  let n = 0n;
+  for (const h of groups) {
+    n = (n << 16n) + BigInt(parseInt(h, 16));
+  }
+  return n;
+}
+
+/** Check whether addr is inside cidr (e.g. 2001:250:5401:101::/64). */
+function ipv6InCidr(addr, cidr) {
+  if (!cidr || typeof cidr !== 'string') return false;
+  const m = cidr.trim().match(/^(.+?)\/(\d{1,3})$/);
+  if (!m) return false;
+  const prefix = parseInt(m[2], 10);
+  if (prefix < 0 || prefix > 128) return false;
+  const net = ipv6ToBigInt(m[1]);
+  const ip = ipv6ToBigInt(addr);
+  if (net === null || ip === null) return false;
+  if (prefix === 0) return true;
+  const shift = 128n - BigInt(prefix);
+  return (ip >> shift) === (net >> shift);
+}
+
+
 function lookupGateway(ip) {
   if (!ip) return null;
   const parts = ip.split('.');
@@ -106,8 +182,8 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   search = search === undefined || search === null ? '' : String(search).slice(0, 200);
 
   if (search) {
-    where.push('(ip LIKE ? OR device_name LIKE ? OR user_name LIKE ? OR mac LIKE ?)');
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+    where.push('(ip LIKE ? OR ipv6 LIKE ? OR device_name LIKE ? OR user_name LIKE ? OR mac LIKE ?)');
+    params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
   }
   if (vlan) {
     const planMatch = String(vlan).match(/^plan:(\d+)$/);
@@ -120,8 +196,13 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
         if (plan.subnet) {
           const parsed = parseCidr(plan.subnet);
           if (parsed) {
-            where.push('ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?');
-            params.push(parsed.network, parsed.broadcast);
+            if (plan.enable_ipv6) {
+              where.push('((ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?) OR (ipv6 IS NOT NULL AND trim(ipv6) != \'\'))');
+              params.push(parsed.network, parsed.broadcast);
+            } else {
+              where.push('ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?');
+              params.push(parsed.network, parsed.broadcast);
+            }
           }
         }
       }
@@ -172,9 +253,10 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
 
   const whereClause = where.length ? 'WHERE ' + where.join(' AND ') : '';
 
-  const validSorts = ['ip','mac','device_name','user_name','updated_at','registered_at','vlan','status','department','device_type'];
+  const validSorts = ['ip','ipv6','mac','device_name','user_name','updated_at','registered_at','vlan','status','department','device_type'];
   let sortCol = validSorts.includes(sort) ? sort : 'updated_at';
   if (sortCol === 'ip') sortCol = 'ip_sort';
+  if (sortCol === 'ipv6') sortCol = 'ipv6_sort';
   const sortDir = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
 
   const total = db.prepare(`SELECT COUNT(*) as cnt FROM ip_records ${whereClause}`).get(...params).cnt;
@@ -272,6 +354,47 @@ function isDynamicVlanToken(vlanToken) {
   return false;
 }
 
+function planEnablesIpv6(vlanToken) {
+  const m = String(vlanToken || '').match(/^plan:(\d+)$/);
+  if (m) {
+    const plan = db.prepare('SELECT enable_ipv6 FROM vlan_plans WHERE id = ?').get(Number(m[1]));
+    return !!(plan && plan.enable_ipv6);
+  }
+  const vlan = resolveVlanToken(vlanToken) || vlanToken;
+  if (!vlan) return false;
+  const row = db.prepare('SELECT enable_ipv6 FROM vlan_plans WHERE vlan = ? AND enable_ipv6 = 1 LIMIT 1').get(vlan);
+  return !!row;
+}
+
+function getVlanPlanForToken(vlanToken) {
+  const m = String(vlanToken || '').match(/^plan:(\d+)$/);
+  if (m) return db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(Number(m[1])) || null;
+  const vlan = resolveVlanToken(vlanToken) || vlanToken;
+  if (!vlan) return null;
+  return db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? AND enable_ipv6 = 1 LIMIT 1').get(vlan)
+    || db.prepare('SELECT * FROM vlan_plans WHERE vlan = ? LIMIT 1').get(vlan)
+    || null;
+}
+
+function normalizeRecordIpv6(data, vlanToken) {
+  let ipv6 = data.ipv6 !== undefined && data.ipv6 !== null ? String(data.ipv6).trim() : '';
+  const plan = getVlanPlanForToken(vlanToken);
+  if (!plan || !plan.enable_ipv6) {
+    return { ipv6: null, ipv6Sort: null };
+  }
+  if (!ipv6) return { ipv6: null, ipv6Sort: null };
+  if (!isValidIpv6(ipv6)) throw new Error('IPv6 地址格式不合法');
+  if (plan.ipv6_subnet) {
+    if (!isValidIpv6Cidr(plan.ipv6_subnet)) {
+      throw new Error('该 VLAN 的 IPv6 网段配置无效，请先在数据字典中修正');
+    }
+    if (!ipv6InCidr(ipv6, plan.ipv6_subnet)) {
+      throw new Error(`IPv6 地址必须在所选 VLAN 网段（${plan.ipv6_subnet}）范围内`);
+    }
+  }
+  return { ipv6, ipv6Sort: ipv6SortKey(ipv6) };
+}
+
 function createRecord(data) {
   checkStringFields(data);
   const isDynamic = isDynamicVlanToken(data.vlan);
@@ -290,11 +413,12 @@ function createRecord(data) {
   const gateway = data.gateway || (data.ip ? lookupGateway(data.ip) : null);
   const vlan = resolveVlanToken(data.vlan) || (data.ip ? lookupVlanByIp(data.ip) : null);
   const ipSort = data.ip ? ipToInt(data.ip) : null;
+  const { ipv6, ipv6Sort } = normalizeRecordIpv6(data, data.vlan);
   const insertResult = db.prepare(`
-    INSERT INTO ip_records (vlan, ip, ip_sort, mac, device_type, device_name, location, department, user_name, remark, status, registered_at, upper_switch, switch_port, sunlogin_id, gateway)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO ip_records (vlan, ip, ip_sort, ipv6, ipv6_sort, mac, device_type, device_name, location, department, user_name, remark, status, registered_at, upper_switch, switch_port, sunlogin_id, gateway)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
-    vlan || null, data.ip || null, ipSort, data.mac || null, data.device_type || null,
+    vlan || null, data.ip || null, ipSort, ipv6, ipv6Sort, data.mac || null, data.device_type || null,
     data.device_name || null, data.location || null, data.department || null,
     data.user_name || null, data.remark || null, data.status || null,
     data.registered_at || new Date().toISOString().slice(0,10),
@@ -325,12 +449,18 @@ function updateRecord(id, data) {
   const vlan = resolveVlanToken(data.vlan) || existing.vlan;
   const resolvedIp = data.ip || existing.ip || null;
   const ipSort = resolvedIp ? ipToInt(resolvedIp) : null;
+  const vlanTokenForIpv6 = data.vlan || existing.vlan;
+  const ipv6Source = data.ipv6 !== undefined ? data : existing;
+  const { ipv6, ipv6Sort } = normalizeRecordIpv6(
+    { ipv6: data.ipv6 !== undefined ? data.ipv6 : existing.ipv6 },
+    vlanTokenForIpv6
+  );
   db.prepare(`
     UPDATE ip_records SET
-      vlan=?, ip=?, ip_sort=?, mac=?, device_type=?, device_name=?, location=?, department=?, user_name=?, remark=?, status=?, registered_at=?, upper_switch=?, switch_port=?, sunlogin_id=?, gateway=?, updated_at=datetime('now','localtime')
+      vlan=?, ip=?, ip_sort=?, ipv6=?, ipv6_sort=?, mac=?, device_type=?, device_name=?, location=?, department=?, user_name=?, remark=?, status=?, registered_at=?, upper_switch=?, switch_port=?, sunlogin_id=?, gateway=?, updated_at=datetime('now','localtime')
     WHERE id=?
   `).run(
-    vlan, data.ip || null, ipSort, data.mac || null, data.device_type || null,
+    vlan, data.ip || null, ipSort, ipv6, ipv6Sort, data.mac || null, data.device_type || null,
     data.device_name || null, data.location || null, data.department || null,
     data.user_name || null, data.remark || null, data.status || null,
     data.registered_at || existing.registered_at,
@@ -446,9 +576,10 @@ function getDeviceTypeStats(scope = null) {
 }
 
 function getSubnetRecords(prefix, sort = 'ip', order = 'asc', vlan = null) {
-  const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
+  const validSorts = ['ip','ipv6','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
+  if (sortCol === 'ipv6') sortCol = 'ipv6_sort';
   const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   const prefixParts = String(prefix).split('.').filter(Boolean);
   let rows;
@@ -478,9 +609,10 @@ function getSubnetRecords(prefix, sort = 'ip', order = 'asc', vlan = null) {
 }
 
 function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc', vlan = null) {
-  const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
+  const validSorts = ['ip','ipv6','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
+  if (sortCol === 'ipv6') sortCol = 'ipv6_sort';
   const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   const parsed = parseCidr(cidr);
   if (!parsed) return [];
@@ -497,9 +629,10 @@ function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc', vlan = null) {
 }
 
 function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
-  const validSorts = ['ip','device_name','user_name','status','department','device_type','registered_at','updated_at'];
+  const validSorts = ['ip','ipv6','device_name','user_name','status','department','device_type','registered_at','updated_at'];
   let sortCol = validSorts.includes(sort) ? sort : 'ip';
   if (sortCol === 'ip') sortCol = 'ip_sort';
+  if (sortCol === 'ipv6') sortCol = 'ipv6_sort';
   const sortDir = order.toLowerCase() === 'desc' ? 'DESC' : 'ASC';
   const rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? ORDER BY ${sortCol} ${sortDir}`).all(vlan);
   const dupSet = getDuplicateIpSet();
@@ -510,7 +643,7 @@ function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
 
 module.exports = {
   scopeClause, planInScope,
-  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
+  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, isValidIpv6, isValidIpv6Cidr, ipv6InCidr, ipv6SortKey, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
   getSubnetRecords, getSubnetRecordsByCidr, getVlanRecords,

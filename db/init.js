@@ -161,6 +161,37 @@ function initDatabase() {
     db.exec("ALTER TABLE vlan_plans ADD COLUMN is_dynamic INTEGER DEFAULT 0");
   }
 
+  // Migration: IPv6 support on vlan_plans
+  try {
+    db.prepare("SELECT enable_ipv6 FROM vlan_plans LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE vlan_plans ADD COLUMN enable_ipv6 INTEGER DEFAULT 0");
+  }
+  try {
+    db.prepare("SELECT ipv6_subnet FROM vlan_plans LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE vlan_plans ADD COLUMN ipv6_subnet TEXT");
+  }
+  try {
+    db.prepare("SELECT ipv6_gateway FROM vlan_plans LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE vlan_plans ADD COLUMN ipv6_gateway TEXT");
+  }
+
+  // Migration: IPv6 address on ip_records
+  try {
+    db.prepare("SELECT ipv6 FROM ip_records LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE ip_records ADD COLUMN ipv6 TEXT");
+  }
+  try {
+    db.prepare("SELECT ipv6_sort FROM ip_records LIMIT 1").get();
+  } catch (e) {
+    db.exec("ALTER TABLE ip_records ADD COLUMN ipv6_sort TEXT");
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ip_records_ipv6 ON ip_records(ipv6);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ip_records_ipv6_sort ON ip_records(ipv6_sort);`);
+
   // Unique constraint for vlan_plans (vlan + subnet)
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_vlan_plan_unique ON vlan_plans(vlan, subnet);`);
 

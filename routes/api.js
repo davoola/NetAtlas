@@ -9,11 +9,11 @@ const sessionStore = require('../middleware/sessionStore');
 const { UserError, publicMessage, logError } = require('../utils/errors');
 const { limitedName, clampInt, checkStringFields } = require('../utils/validate');
 
-const DICT_LIMITS = { name: 100, description: 500, vlan: 50, subnet: 50, mask: 50, gateway: 45, address_pool_note: 200, prefix: 50, default_vlan: 50 };
+const DICT_LIMITS = { name: 100, description: 500, vlan: 50, subnet: 50, mask: 50, gateway: 45, address_pool_note: 200, prefix: 50, default_vlan: 50, ipv6_subnet: 80, ipv6_gateway: 64 };
 // 字典类接口的输入长度/类型校验；不合法时抛出业务错误
 function checkDictBody(body) {
   if (!body || typeof body !== 'object') throw new UserError('请求参数不正确');
-  checkStringFields(body, DICT_LIMITS, { name: '名称', description: '描述', vlan: 'VLAN', subnet: '网段', mask: '掩码', gateway: '网关', address_pool_note: '地址池说明', prefix: 'IP前缀', default_vlan: '默认VLAN' });
+  checkStringFields(body, DICT_LIMITS, { name: '名称', description: '描述', vlan: 'VLAN', subnet: '网段', mask: '掩码', gateway: '网关', address_pool_note: '地址池说明', prefix: 'IP前缀', default_vlan: '默认VLAN', ipv6_subnet: 'IPv6网段', ipv6_gateway: 'IPv6网关' });
 }
 
 // 统一的 catch 处理：业务错误返回原文，内部错误只返回通用提示并记录服务端日志
@@ -557,8 +557,8 @@ router.get('/export/records', requireAuth, (req, res) => {
   const scope = getReadableVlanScope(req);
   const q = (k) => (typeof req.query[k] === 'string' ? req.query[k] : '');
   const filters = { search: q('search'), vlan: q('vlan'), department: q('department'), status: q('status'), deviceType: q('deviceType'), sort: 'ip', order: 'asc', scope, onlyDuplicate: q('onlyDuplicate'), onlyMacConflict: q('onlyMacConflict') };
-  const headers = ['ID','IP地址','VLAN','MAC地址','设备类型','设备名称','物理位置','部门','使用人','状态','登记日期','上层交换机','交换机端口','向日葵ID','网关','备注','更新日期'];
-  const cols = ['id','ip','vlan','mac','device_type','device_name','location','department','user_name','status','registered_at','upper_switch','switch_port','sunlogin_id','gateway','remark','updated_at'];
+  const headers = ['ID','IP地址','IPv6地址','VLAN','MAC地址','设备类型','设备名称','物理位置','部门','使用人','状态','登记日期','上层交换机','交换机端口','向日葵ID','网关','备注','更新日期'];
+  const cols = ['id','ip','ipv6','vlan','mac','device_type','device_name','location','department','user_name','status','registered_at','upper_switch','switch_port','sunlogin_id','gateway','remark','updated_at'];
 
   const first = ipService.listRecords({ ...filters, page: 1, perPage: EXPORT_CHUNK });
   if (first.total > EXPORT_MAX_ROWS) {
@@ -624,8 +624,8 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
     }
     records = ipService.getSubnetRecords(prefix, 'ip', 'asc', plan ? plan.vlan : null);
   }
-  const headers = ['主机号','IP地址','设备名称','部门','使用人','状态','MAC地址','网关','VLAN','设备类型','物理位置','上层交换机','交换机端口','向日葵ID','登记日期','备注'];
-  const cols = ['host','ip','device_name','department','user_name','status','mac','gateway','vlan','device_type','location','upper_switch','switch_port','sunlogin_id','registered_at','remark'];
+  const headers = ['主机号','IP地址','IPv6地址','设备名称','部门','使用人','状态','MAC地址','网关','VLAN','设备类型','物理位置','上层交换机','交换机端口','向日葵ID','登记日期','备注'];
+  const cols = ['host','ip','ipv6','device_name','department','user_name','status','mac','gateway','vlan','device_type','location','upper_switch','switch_port','sunlogin_id','registered_at','remark'];
   let csv = '\uFEFF' + headers.join(',') + '\n';
   records.forEach(r => {
     const row = { ...r, host: r.ip ? r.ip.split('.')[3] : '' };

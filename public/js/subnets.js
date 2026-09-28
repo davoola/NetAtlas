@@ -146,9 +146,19 @@ async function viewSubnet() {
     }
     document.getElementById('subnetInfo').innerHTML = subnetInfo;
 
+    const showIpv6 = !!(plan && plan.enable_ipv6);
+    document.querySelectorAll('#subnetTable th[data-sort="ipv6"], #subnetTable .col-ipv6').forEach(el => {
+      el.style.display = showIpv6 ? '' : 'none';
+    });
+    if (plan && plan.ipv6_subnet) {
+      subnetInfo += ` | IPv6网段: <strong style="color:var(--primary)">${escapeHtml(plan.ipv6_subnet)}</strong>`;
+      if (plan.ipv6_gateway) subnetInfo += ` | IPv6网关: ${escapeHtml(plan.ipv6_gateway)}`;
+      document.getElementById('subnetInfo').innerHTML = subnetInfo;
+    }
+
     const tbody = document.getElementById('subnetBody');
     if (data.records.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--neutral-400);padding:40px">该网段暂无登记记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="' + (showIpv6 ? 8 : 7) + '" style="text-align:center;color:var(--neutral-400);padding:40px">该网段暂无登记记录</td></tr>';
     } else {
       tbody.innerHTML = data.records.map(r => {
         const hostPart = r.ip ? r.ip.split('.').slice(3)[0] : '-';
@@ -158,6 +168,7 @@ async function viewSubnet() {
           <tr class="${rowClass}">
             <td>${escapeHtml(hostPart)}</td>
             <td>${escapeHtml(r.ip || '-')} ${dupBadge}</td>
+            <td class="col-ipv6" style="display:${showIpv6 ? '' : 'none'}">${escapeHtml(r.ipv6 || '-')}</td>
             <td>${escapeHtml(r.device_name || '-')}</td>
             <td>${escapeHtml(r.department || '-')}</td>
             <td>${escapeHtml(r.user_name || '-')}</td>
@@ -209,7 +220,7 @@ async function viewSubnetRecord(id) {
   try {
     const r = await api(`/api/records/${id}`);
     const fields = [
-      ['ID', r.id], ['IP地址', r.ip], ['VLAN', r.vlan], ['MAC地址', r.mac],
+      ['ID', r.id], ['IP地址', r.ip], ['IPv6地址', r.ipv6], ['VLAN', r.vlan], ['MAC地址', r.mac],
       ['设备类型', r.device_type], ['设备名称', r.device_name], ['物理位置', r.location],
       ['所属部门', r.department], ['使用人', r.user_name], ['使用状态', r.status],
       ['登记日期', r.registered_at], ['上层交换机', r.upper_switch],
