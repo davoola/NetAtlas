@@ -32,9 +32,7 @@ async function loadDictVlanPlans() {
   const items = await api('/api/dict/vlan-plans');
   document.getElementById('dictVlanPlans').innerHTML = items.map(d => `
     <tr><td>${escapeHtml(d.vlan)}</td><td>${escapeHtml(d.name||'-')}</td><td>${escapeHtml(d.subnet||'-')}</td>
-    <td>${escapeHtml(d.mask||'-')}</td><td>${escapeHtml(d.gateway||'-')}</td>
-    <td>${d.enable_ipv6 ? '是' : '否'}</td><td>${escapeHtml(d.ipv6_subnet||'-')}</td>
-    <td>${escapeHtml(d.description||'-')}</td>
+    <td>${escapeHtml(d.mask||'-')}</td><td>${escapeHtml(d.gateway||'-')}</td><td>${escapeHtml(d.description||'-')}</td>
     <td>${escapeHtml(d.address_pool_note||'-')}</td><td>${d.is_dynamic ? '是' : '否'}</td><td>${d.sort_order}</td>
     ${canManageDict ? `<td><button class="btn btn-sm btn-secondary" data-action="edit" data-type="vlan-plans" data-id="${d.id}">编辑</button>
     <button class="btn btn-sm btn-danger" data-action="delete" data-type="vlan-plans" data-id="${d.id}">删除</button></td>` : '<td>-</td>'}</tr>`).join('');
@@ -98,19 +96,6 @@ function reloadDict(type) {
 }
 
 // VLAN plan modal
-function toggleVlanIpv6Fields() {
-  const on = document.getElementById('vp_enable_ipv6').checked;
-  document.querySelectorAll('.ipv6-plan-fields').forEach(el => {
-    el.style.display = on ? '' : 'none';
-  });
-  if (!on) {
-    const s = document.getElementById('vp_ipv6_subnet');
-    const g = document.getElementById('vp_ipv6_gateway');
-    if (s) s.value = '';
-    if (g) g.value = '';
-  }
-}
-
 async function editVlanPlan(id) {
   const plans = await api('/api/dict/vlan-plans');
   const p = plans.find(x => x.id === id);
@@ -126,10 +111,6 @@ async function editVlanPlan(id) {
   document.getElementById('vp_address_pool_note').value = p.address_pool_note || '';
   document.getElementById('vp_sort_order').value = p.sort_order || 0;
   document.getElementById('vp_is_dynamic').checked = !!p.is_dynamic;
-  document.getElementById('vp_enable_ipv6').checked = !!p.enable_ipv6;
-  document.getElementById('vp_ipv6_subnet').value = p.ipv6_subnet || '';
-  document.getElementById('vp_ipv6_gateway').value = p.ipv6_gateway || '';
-  toggleVlanIpv6Fields();
   document.getElementById('vlanModal').classList.add('show');
 };
 
@@ -149,15 +130,11 @@ async function saveVlanPlan() {
     address_pool_note: document.getElementById('vp_address_pool_note').value.trim(),
     sort_order: parseInt(document.getElementById('vp_sort_order').value) || 0,
     is_dynamic: document.getElementById('vp_is_dynamic').checked ? 1 : 0,
-    enable_ipv6: document.getElementById('vp_enable_ipv6').checked ? 1 : 0,
-    ipv6_subnet: document.getElementById('vp_ipv6_subnet').value.trim(),
-    ipv6_gateway: document.getElementById('vp_ipv6_gateway').value.trim(),
   };
   if (!data.vlan) { if (btn) btn.disabled = false; return showToast('VLAN编号不能为空', 'error'); }
   if (!data.is_dynamic && !data.subnet) { if (btn) btn.disabled = false; return showToast('网段不能为空（动态IP池可不填）', 'error'); }
   if (data.subnet && !/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/.test(data.subnet)) { if (btn) btn.disabled = false; return showToast('网段格式不正确，应为如 192.168.10.0/24', 'error'); }
   if (data.gateway && !/^\d{1,3}(\.\d{1,3}){3}$/.test(data.gateway)) { if (btn) btn.disabled = false; return showToast('网关IP格式不正确', 'error'); }
-  if (data.enable_ipv6 && !data.ipv6_subnet) { if (btn) btn.disabled = false; return showToast('启用 IPv6 时请填写 IPv6 网段', 'error'); }
   try {
     if (id) {
       await api(`/api/dict/vlan-plans/${id}`, { method: 'PUT', body: JSON.stringify(data) });
@@ -218,12 +195,16 @@ document.addEventListener('DOMContentLoaded', () => {
   loadDictPrefixGateways();
 
   // Load site name
-  api('/api/settings/site_name').then(d => { document.getElementById('settingSiteName').value = d.value || ''; });
+  const _siteNameEl = document.getElementById('settingSiteName');
+  if (_siteNameEl) api('/api/settings/site_name').then(d => { _siteNameEl.value = d.value || ''; }).catch(() => {});
 
-  // Hide add buttons for non-superadmin
+  // Hide add/edit controls for non-superadmin（管理员只读参考）
   if (!canManageDict) {
-    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName, #btnCheckpoint, #btnBackupDb, #btnCleanupAuditLogs').forEach(el => el.style.display = 'none');
-    document.getElementById('settingSiteName').readOnly = true;
+    document.querySelectorAll('.dict-add-row, #btnAddVlan, #btnAddPrefix, #btnSaveSiteName, #btnCheckpoint, #btnBackupDb, #btnCleanupAuditLogs').forEach(el => {
+      if (el) el.style.display = 'none';
+    });
+    const siteEl = document.getElementById('settingSiteName');
+    if (siteEl) siteEl.readOnly = true;
   }
 
   document.querySelectorAll('.dict-tab').forEach(tab => {
@@ -240,11 +221,9 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('vlanModalTitle').textContent = '新增VLAN规划';
       document.getElementById('vlanForm').reset();
       document.getElementById('vlanPlanId').value = '';
-      toggleVlanIpv6Fields();
       document.getElementById('vlanModal').classList.add('show');
     });
     document.getElementById('btnSaveVlan').addEventListener('click', saveVlanPlan);
-    document.getElementById('vp_enable_ipv6').addEventListener('change', toggleVlanIpv6Fields);
 
     document.getElementById('btnAddPrefix').addEventListener('click', () => {
       document.getElementById('prefixModalTitle').textContent = '新增网关映射';
@@ -258,7 +237,8 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('btnSaveStatus').addEventListener('click', saveStatus);
     document.getElementById('btnSaveDept').addEventListener('click', saveDept);
 
-    document.getElementById('btnSaveSiteName').addEventListener('click', async () => {
+    const btnSaveSiteName = document.getElementById('btnSaveSiteName');
+    if (btnSaveSiteName) btnSaveSiteName.addEventListener('click', async () => {
       const val = document.getElementById('settingSiteName').value.trim();
       if (!val) return showToast('请输入网站名称', 'error');
       try {
@@ -267,7 +247,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (e) { showToast('保存失败: ' + e.message, 'error'); }
     });
 
-    document.getElementById('btnCleanupAuditLogs').addEventListener('click', async () => {
+    const _btnCleanupAuditLogs = document.getElementById('btnCleanupAuditLogs');
+    if (_btnCleanupAuditLogs) _btnCleanupAuditLogs.addEventListener('click', async () => {
   const input = document.getElementById('auditCleanupBeforeDate');
   if (!input.value) return showToast('请选择清理截止日期', 'error');
   if (!confirm(`确定清理 ${input.value} 之前的审计日志吗？此操作不可撤销。`)) return;
@@ -280,7 +261,8 @@ document.addEventListener('DOMContentLoaded', () => {
   finally { btn.disabled = false; }
 });
 
- document.getElementById('btnCheckpoint').addEventListener('click', async () => {
+ const _btnCheckpoint = document.getElementById('btnCheckpoint');
+    if (_btnCheckpoint) _btnCheckpoint.addEventListener('click', async () => {
       const btn = document.getElementById('btnCheckpoint');
       btn.disabled = true;
       try {
@@ -293,7 +275,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    document.getElementById('btnBackupDb').addEventListener('click', async () => {
+    const _btnBackupDb = document.getElementById('btnBackupDb');
+    if (_btnBackupDb) _btnBackupDb.addEventListener('click', async () => {
       if (!confirm('确认备份数据库？将先合并 WAL，再复制到 BACKUP_DIR 目录。')) return;
       const btn = document.getElementById('btnBackupDb');
       btn.disabled = true;

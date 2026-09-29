@@ -38,7 +38,7 @@ router.get('/subnets', requireAuth, (req, res) => {
   res.render('pages/subnets', { title: '网段使用明细', activePage: 'subnets', extraScript: '/js/subnets.js' });
 });
 
-router.get('/dictionary', requireAuth, (req, res) => {
+router.get('/dictionary', requireAuth, requireRole('superadmin', 'admin'), (req, res) => {
   res.render('pages/dictionary', { title: '数据字典', activePage: 'dictionary', extraScript: '/js/dictionary.js' });
 });
 
