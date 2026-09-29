@@ -92,6 +92,10 @@ function updateUser(id, { username, role, display_name, enabled }, actorId = nul
   const updated = findById(id);
   // 角色/启用状态变化后，会话中缓存的旧角色不再可信
   updated._securityChanged = newRole !== user.role || newEnabled !== user.enabled;
+  // L-1: 降级为非管理员时清空 VLAN 授权，避免再次升级时残留授权自动恢复
+  if (user.role === 'admin' && newRole !== 'admin') {
+    db.prepare('DELETE FROM admin_vlan_permissions WHERE user_id = ?').run(Number(id));
+  }
   return updated;
 }
 
@@ -150,10 +154,19 @@ function setAdminVlanPermissions(userId, vlans) {
     throw new UserError('VLAN 权限参数不正确');
   }
   if (!findById(userId)) throw new UserError('用户不存在', 404);
+  const validTokens = new Set();
+  for (const row of db.prepare('SELECT id, vlan FROM vlan_plans').all()) {
+    validTokens.add(String(row.vlan));
+    validTokens.add('plan:' + row.id);
+  }
+  const cleaned = vlans.map(v => String(v).trim()).filter(Boolean);
+  for (const tok of cleaned) {
+    if (!validTokens.has(tok)) throw new UserError('无效的 VLAN 授权项: ' + tok);
+  }
   db.transaction(() => {
-  db.prepare('DELETE FROM admin_vlan_permissions WHERE user_id = ?').run(userId);
-  const stmt = db.prepare('INSERT OR IGNORE INTO admin_vlan_permissions (user_id, vlan) VALUES (?,?)');
-  vlans.forEach(v => stmt.run(userId, String(v)));
+    db.prepare('DELETE FROM admin_vlan_permissions WHERE user_id = ?').run(userId);
+    const stmt = db.prepare('INSERT OR IGNORE INTO admin_vlan_permissions (user_id, vlan) VALUES (?,?)');
+    cleaned.forEach(v => stmt.run(userId, v));
   });
 }
 

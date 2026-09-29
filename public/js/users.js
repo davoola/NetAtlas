@@ -11,8 +11,14 @@ async function loadUsers() {
       const roleText = u.role === 'superadmin' ? '超级管理员' : (u.role === 'admin' ? '管理员' : '普通用户');
       const statusText = u.enabled ? '<span style="color:var(--success)">启用</span>' : '<span style="color:var(--error)">禁用</span>';
       const perms = (u.vlanPermissions || []).map(token => {
-        const plan = allVlanOptions.find(p => planToken(p) === token || p.vlan === token);
-        return plan ? planLabel(plan) : token;
+        if (String(token).startsWith('plan:')) {
+          const plan = allVlanOptions.find(p => planToken(p) === token);
+          return plan ? planLabel(plan) : token;
+        }
+        // 裸 VLAN 编号 = 该编号下全部网段
+        const siblings = allVlanOptions.filter(p => String(p.vlan) === String(token));
+        if (siblings.length) return `VLAN ${token}（全部网段: ${siblings.map(p => p.subnet || p.name || '动态池').join('、')}）`;
+        return `VLAN ${token}（全部网段）`;
       }).join(', ') || '-';
       return `<tr>
         <td class="col-id">${u.id}</td>
@@ -88,7 +94,10 @@ function togglePermSection(role, existingPerms) {
     const list = document.getElementById('permVlanList');
     list.innerHTML = allVlanOptions.map(plan => {
       const token = planToken(plan);
-      const checked = existingPerms && (existingPerms.includes(token) || existingPerms.includes(plan.vlan)) ? 'checked' : '';
+      // 仅精确匹配 plan:ID；裸 VLAN 全量授权时勾选该编号下全部规划以便可视化，保存时写回各 plan:ID
+      const checked = existingPerms && (
+        existingPerms.includes(token) || existingPerms.includes(String(plan.vlan))
+      ) ? 'checked' : '';
       return `<div class="checkbox-item"><input type="checkbox" value="${token}" id="perm_${plan.id}" ${checked}><label for="perm_${plan.id}">${escapeHtml(planLabel(plan))}</label></div>`;
     }).join('');
   } else {

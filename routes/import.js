@@ -9,6 +9,25 @@ const ipService = require('../services/ipService');
 const dictService = require('../services/dictService');
 const db = require('../db');
 
+/** 导入落库前清洗公式前缀，降低 CSV 公式注入风险（纵深防御） */
+function sanitizeImportValue(v) {
+  if (v === null || v === undefined) return v;
+  if (typeof v !== 'string') return v;
+  const s = v.trim();
+  if (/^[=+\-@\t\r]/.test(s) || /^\s*[=+\-@]/.test(v)) {
+    return "'" + v;
+  }
+  return v;
+}
+function sanitizeRecordFields(record) {
+  const out = { ...record };
+  for (const k of Object.keys(out)) {
+    if (typeof out[k] === 'string') out[k] = sanitizeImportValue(out[k]);
+  }
+  return out;
+}
+
+
 const ALLOWED_MIMES = [
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel',
@@ -20,7 +39,7 @@ const ALLOWED_MIMES = [
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 5, parts: 6 },
   fileFilter: (req, file, cb) => {
     if (ALLOWED_MIMES.includes(file.mimetype) || /\.(xlsx|xls|csv)$/i.test(file.originalname)) {
       cb(null, true);
@@ -65,9 +84,9 @@ function normalizeVlan(val) {
   if (val === null || val === undefined || val === '') return null;
   const s = String(val).trim();
   if (s === '自动获取') return null;
-  const num = parseInt(s);
-  if (!isNaN(num)) return String(num);
-  return s;
+  // 严格数字：拒绝 "10abc" 被静默解析为 10
+  if (/^\d+$/.test(s)) return s;
+  return s; // 非纯数字保留原文，后续由字典存在性校验拦截
 }
 
 function normalizeStatus(val) {
@@ -156,7 +175,7 @@ function processRowsInner(rows, req, strategy) {
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    const record = {};
+    let record = {};
     for (const [key, val] of Object.entries(row)) {
       const trimmedKey = key.trim();
       if (!Object.prototype.hasOwnProperty.call(FIELD_MAP, trimmedKey)) continue;
@@ -165,6 +184,7 @@ function processRowsInner(rows, req, strategy) {
       record[field] = val !== null && val !== undefined && !(val instanceof Date) ? String(val).trim() : val;
     }
 
+    record = sanitizeRecordFields(record);
     record.vlan = normalizeVlan(record.vlan);
     if (!record.vlan && record.ip) {
       record.vlan = ipService.lookupVlanByIp(record.ip);
@@ -223,7 +243,7 @@ function processRowsInner(rows, req, strategy) {
       const planId = getPlanIdByVlan(record.vlan, record.ip);
       return planId ? `plan:${planId}` : record.vlan;
     })() : null;
-    if (!canManageVlan(req, vlanToken || record.vlan)) {
+    if (!canManageVlan(req, vlanToken || record.vlan, record.ip)) {
       errors.push(`第${i + 2}行: 无权管理VLAN ${record.vlan || '(自动)'}`);
       skip++;
       continue;
@@ -237,7 +257,23 @@ function processRowsInner(rows, req, strategy) {
       continue;
     }
 
-    const existing = record.ip ? db.prepare('SELECT id, vlan FROM ip_records WHERE ip = ? ORDER BY id LIMIT 1').get(record.ip) : null;
+    let existing = null;
+    if (record.ip) {
+      const rows = db.prepare('SELECT id, vlan, mac FROM ip_records WHERE ip = ? ORDER BY id').all(record.ip);
+      if (rows.length === 1) {
+        existing = rows[0];
+      } else if (rows.length > 1) {
+        const key = ipService.macKey(record.mac);
+        if (key) {
+          existing = rows.find(r => ipService.macKey(r.mac) === key) || null;
+          // 未命中 MAC：视为同 IP 另一台设备，走新增
+        } else {
+          errors.push(`第${i + 2}行: IP ${record.ip} 对应 ${rows.length} 条记录且未提供可识别的 MAC，无法确定更新哪一条`);
+          skip++;
+          continue;
+        }
+      }
+    }
     if (existing) {
       if (strategy === 'skip') {
         errors.push(`第${i + 2}行: IP ${record.ip} 已存在，按"跳过"策略未导入`);
@@ -245,13 +281,13 @@ function processRowsInner(rows, req, strategy) {
         continue;
       } else if (strategy === 'update') {
         // 必须同时具备"原记录所属 VLAN"的管理权限，防止越权覆盖/迁移未授权 VLAN 的记录
-        if (!canManageVlan(req, existing.vlan)) {
+        if (!canManageVlan(req, existing.vlan, existing.ip || record.ip)) {
           errors.push(`第${i + 2}行: 无权更新IP ${record.ip} 的现有记录（其所属VLAN未授权给您）`);
           skip++;
           continue;
         }
         try {
-          ipService.updateRecord(existing.id, record);
+          ipService.updateRecord(existing.id, sanitizeRecordFields(record));
           updated++;
         } catch (e) {
           errors.push(`第${i + 2}行: 更新失败: ${e.message}`);
@@ -266,7 +302,7 @@ function processRowsInner(rows, req, strategy) {
     }
 
     try {
-      ipService.createRecord(record);
+      ipService.createRecord(sanitizeRecordFields(record));
       success++;
     } catch (e) {
       errors.push(`第${i + 2}行: ${e.message}`);

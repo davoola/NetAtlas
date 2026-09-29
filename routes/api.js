@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { requireAuth, requireRole, canManageVlan, getReadableVlanScope } = require('../middleware/auth');
+const { requireAuth, requireRole, canManageVlan, canManageRecord, getReadableVlanScope } = require('../middleware/auth');
 const ipService = require('../services/ipService');
 const dictService = require('../services/dictService');
 const userService = require('../services/userService');
@@ -9,11 +9,11 @@ const sessionStore = require('../middleware/sessionStore');
 const { UserError, publicMessage, logError } = require('../utils/errors');
 const { limitedName, clampInt, checkStringFields } = require('../utils/validate');
 
-const DICT_LIMITS = { name: 100, description: 500, vlan: 50, subnet: 50, mask: 50, gateway: 45, address_pool_note: 200, prefix: 50, default_vlan: 50, ipv6_subnet: 80, ipv6_gateway: 64 };
+const DICT_LIMITS = { name: 100, description: 500, vlan: 50, subnet: 50, mask: 50, gateway: 45, address_pool_note: 200, prefix: 50, default_vlan: 50 };
 // 字典类接口的输入长度/类型校验；不合法时抛出业务错误
 function checkDictBody(body) {
   if (!body || typeof body !== 'object') throw new UserError('请求参数不正确');
-  checkStringFields(body, DICT_LIMITS, { name: '名称', description: '描述', vlan: 'VLAN', subnet: '网段', mask: '掩码', gateway: '网关', address_pool_note: '地址池说明', prefix: 'IP前缀', default_vlan: '默认VLAN', ipv6_subnet: 'IPv6网段', ipv6_gateway: 'IPv6网关' });
+  checkStringFields(body, DICT_LIMITS, { name: '名称', description: '描述', vlan: 'VLAN', subnet: '网段', mask: '掩码', gateway: '网关', address_pool_note: '地址池说明', prefix: 'IP前缀', default_vlan: '默认VLAN' });
 }
 
 // 统一的 catch 处理：业务错误返回原文，内部错误只返回通用提示并记录服务端日志
@@ -62,7 +62,7 @@ router.get('/gateway-lookup', requireAuth, (req, res) => {
   const vlan = plan ? plan.vlan : null;
   const planId = plan ? plan.id : null;
   const scope = getReadableVlanScope(req);
-  if (!scope.all && (!vlan || !scope.vlans.includes(String(vlan)))) {
+  if (!scope.all && (!plan || !ipService.planInScope(scope, plan))) {
     return res.json({ gateway: null, vlan: null, planId: null });
   }
   res.json({ gateway: ipService.lookupGateway(ip), vlan, planId });
@@ -84,6 +84,7 @@ router.get('/records', requireAuth, (req, res) => {
     scope,
     onlyDuplicate: req.query.onlyDuplicate || '',
     onlyMacConflict: req.query.onlyMacConflict || '',
+    onlyDuplicateIpv6: req.query.onlyDuplicateIpv6 || '',
   });
   res.json(result);
 });
@@ -92,8 +93,8 @@ router.get('/records/:id', requireAuth, (req, res) => {
   const record = ipService.getRecord(req.params.id);
   if (!record) return res.status(404).json({ error: '记录不存在' });
   const scope = getReadableVlanScope(req);
-  if (!scope.all && !scope.vlans.includes(record.vlan)) {
-    return res.status(403).json({ error: '您没有查看该VLAN记录的权限' });
+  if (!scope.all && !ipService.recordInScope(scope, record)) {
+    return res.status(403).json({ error: '您没有查看该记录的权限' });
   }
   res.json(record);
 });
@@ -101,9 +102,9 @@ router.get('/records/:id', requireAuth, (req, res) => {
 // --- Create record ---
 router.post('/records', requireAuth, (req, res) => {
   const vlan = req.body.vlan || ipService.lookupVlanByIp(req.body.ip);
-  // 先鉴权再校验，避免未授权用户通过校验错误信息探测 VLAN 网段规划
-  if (!canManageVlan(req, vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  // 先鉴权再校验：支持 plan:ID 与「裸编号 + IP 落在已授权网段」
+  if (!canManageVlan(req, vlan, req.body.ip)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN / 网段的权限' });
   }
   try {
     ipService.validateIpForVlan(req.body.ip, req.body.vlan);
@@ -125,12 +126,19 @@ router.post('/records', requireAuth, (req, res) => {
 router.put('/records/:id', requireAuth, (req, res) => {
   const existing = ipService.getRecord(req.params.id);
   if (!existing) return res.status(404).json({ error: '记录不存在' });
-  const newVlan = req.body.vlan || existing.vlan;
-  if (!canManageVlan(req, newVlan) || !canManageVlan(req, existing.vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  const newVlan = (req.body.vlan !== undefined && req.body.vlan !== null && String(req.body.vlan).trim() !== '')
+    ? req.body.vlan
+    : existing.vlan;
+  const newIp = req.body.ip !== undefined ? req.body.ip : existing.ip;
+  if (!canManageRecord(req, existing) || !canManageVlan(req, newVlan, newIp)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN / 网段的权限' });
   }
   try {
-    ipService.validateIpForVlan(req.body.ip, req.body.vlan);
+    const vlanForValidate = (req.body.vlan !== undefined && req.body.vlan !== null && String(req.body.vlan).trim() !== '')
+      ? req.body.vlan
+      : existing.vlan;
+    const ipForValidate = req.body.ip !== undefined ? req.body.ip : existing.ip;
+    ipService.validateIpForVlan(ipForValidate, vlanForValidate);
   } catch (e) {
     return fail(req, res, e, 400);
   }
@@ -160,8 +168,8 @@ router.put('/records/:id', requireAuth, (req, res) => {
 router.delete('/records/:id', requireAuth, (req, res) => {
   const existing = ipService.getRecord(req.params.id);
   if (!existing) return res.status(404).json({ error: '记录不存在' });
-  if (!canManageVlan(req, existing.vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  if (!canManageRecord(req, existing)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN / 网段的权限' });
   }
   ipService.deleteRecord(req.params.id);
   dictService.auditLog(req.session.user, 'delete_record', `删除IP记录: ${existing.ip || 'N/A'} (ID:${existing.id})`, { target_type: 'ip_record', target_id: existing.id, ip_address: existing.ip });
@@ -182,7 +190,7 @@ router.get('/subnet/:prefix', requireAuth, (req, res) => {
         // Large subnet: token is CIDR string
         plan = dictService.getVlanPlans().find(p => p.subnet === token);
         if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
-        if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+        if (!scope.all && !ipService.planInScope(scope, plan)) {
           return res.status(403).json({ error: '您没有查看该网段的权限' });
         }
         records = ipService.getSubnetRecordsByCidr(token, sort, order, plan.vlan);
@@ -191,7 +199,7 @@ router.get('/subnet/:prefix', requireAuth, (req, res) => {
         const planId = Number(token);
         plan = dictService.getVlanPlanById(planId);
         if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
-        if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+        if (!scope.all && !ipService.planInScope(scope, plan)) {
           return res.status(403).json({ error: '您没有查看该网段的权限' });
         }
         records = ipService.getVlanRecords(plan.vlan, sort, order);
@@ -201,7 +209,7 @@ router.get('/subnet/:prefix', requireAuth, (req, res) => {
       plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
       if (!scope.all) {
         if (plan) {
-          if (!scope.vlans.includes(plan.vlan)) {
+          if (!ipService.planInScope(scope, plan)) {
             return res.status(403).json({ error: '您没有查看该网段的权限' });
           }
         } else {
@@ -357,7 +365,7 @@ router.post('/system/backup', requireRole('superadmin'), (req, res) => {
     dictService.auditLog(
       req.session.user,
       'db_backup',
-      '手动备份数据库: ' + result.filename + ' -> ' + result.path,
+      '手动备份数据库: ' + result.filename,
       { target_type: 'system' }
     );
     res.json(result);
@@ -504,8 +512,16 @@ router.post('/audit-logs/cleanup', requireRole('superadmin'), (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(beforeDate)) {
     return res.status(400).json({ error: '请输入有效的清理截止日期' });
   }
-  const deleted = dictService.cleanupAuditLogs(beforeDate);
-  dictService.auditLog(req.session.user, 'cleanup_audit_logs', `清理 ${beforeDate} 之前的审计日志，共 ${deleted} 条`, { target_type: 'audit_log' });
+  let deleted;
+  try {
+    deleted = dictService.cleanupAuditLogs(beforeDate);
+  } catch (e) {
+    return fail(req, res, e);
+  }
+  dictService.auditLog(req.session.user, 'cleanup_audit_logs', `清理 ${beforeDate} 之前的审计日志，共 ${deleted} 条`, {
+    target_type: 'audit_log',
+    actor_ip: req.ip,
+  });
   res.json({ success: true, deleted, message: `已清理 ${deleted} 条审计日志` });
 });
 
@@ -544,10 +560,12 @@ router.get('/audit-logs', requireRole('superadmin'), (req, res) => {
 
 // --- Export records (CSV) ---
 function csvEscape(v) {
-  let s = String(v || '');
-  if (/^[=+\-@\t\r]/.test(s)) s = '\'' + s;
+  if (v === null || v === undefined) return '';
+  // 保留数字 0，避免被 || '' 吃掉
+  let s = typeof v === 'number' ? String(v) : String(v);
+  if (/^\s*[=+\-@\t\r]/.test(s)) s = "'" + s;
   s = s.replace(/"/g, '""');
-  return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
+  return /[,"\n\r]/.test(s) ? `"${s}"` : s;
 }
 
 const EXPORT_MAX_ROWS = parseInt(process.env.EXPORT_MAX_ROWS, 10) || 200000;
@@ -565,6 +583,7 @@ router.get('/export/records', requireAuth, (req, res) => {
     return res.status(400).json({ error: `导出数据量（${first.total} 条）超过上限（${EXPORT_MAX_ROWS} 条），请缩小筛选范围后再导出` });
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', `attachment; filename="ip_records_${new Date().toISOString().slice(0,10)}.csv"`);
   // 分块输出，避免一次性把全部数据拼成超大字符串
   res.write('\uFEFF' + headers.join(',') + '\n');
@@ -593,7 +612,7 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
       // Large subnet
       plan = dictService.getVlanPlans().find(p => p.subnet === token);
       if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
-      if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+      if (!scope.all && !ipService.planInScope(scope, plan)) {
         return res.status(403).json({ error: '您没有导出该网段的权限' });
       }
       records = ipService.getSubnetRecordsByCidr(token, 'ip', 'asc', plan.vlan);
@@ -603,7 +622,7 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
       const planId = Number(token);
       plan = dictService.getVlanPlanById(planId);
       if (!plan) return res.status(404).json({ error: '未找到该网段规划' });
-      if (!scope.all && !scope.vlans.includes(plan.vlan)) {
+      if (!scope.all && !ipService.planInScope(scope, plan)) {
         return res.status(403).json({ error: '您没有导出该网段的权限' });
       }
       records = ipService.getVlanRecords(plan.vlan, 'ip', 'asc');
@@ -615,7 +634,7 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
     plan = dictService.getVlanPlans().find(p => p.subnet && p.subnet.split('/')[0].split('.').slice(0, 3).join('.') === prefix);
     if (!scope.all) {
       if (plan) {
-        if (!scope.vlans.includes(plan.vlan)) {
+        if (!ipService.planInScope(scope, plan)) {
           return res.status(403).json({ error: '您没有导出该网段的权限' });
         }
       } else {
@@ -632,6 +651,7 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
     csv += cols.map(c => csvEscape(row[c])).join(',') + '\n';
   });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', `attachment; filename="subnet_${fileLabel}_${new Date().toISOString().slice(0,10)}.csv"`);
   res.send(csv);
 });

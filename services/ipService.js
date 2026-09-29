@@ -134,6 +134,14 @@ function lookupVlanByIp(ip) {
   return plan ? plan.vlan : null;
 }
 
+function getDuplicateIpv6Set() {
+  const rows = db.prepare(`
+    SELECT ipv6_sort FROM ip_records WHERE ipv6_sort IS NOT NULL AND ipv6_sort != ''
+    GROUP BY ipv6_sort HAVING COUNT(*) > 1
+  `).all();
+  return new Set(rows.map(r => r.ipv6_sort));
+}
+
 function getDuplicateIpSet() {
   const rows = db.prepare(`
     SELECT ip FROM ip_records WHERE ip IS NOT NULL AND ip != ''
@@ -173,7 +181,7 @@ function getMacConflictMacSet() {
   return new Set([...counts.entries()].filter(([, c]) => c > 1).map(([k]) => k));
 }
 
-function listRecords({ page = 1, perPage = 20, search = '', vlan = '', department = '', status = '', deviceType = '', sort = 'updated_at', order = 'desc', scope = null, onlyDuplicate = '', onlyMacConflict = '' }) {
+function listRecords({ page = 1, perPage = 20, search = '', vlan = '', department = '', status = '', deviceType = '', sort = 'updated_at', order = 'desc', scope = null, onlyDuplicate = '', onlyMacConflict = '', onlyDuplicateIpv6 = '' }) {
   page = clampInt(page, 1, 1, 1000000);
   perPage = clampInt(perPage, 20, 1, 5000);
   const offset = (page - 1) * perPage;
@@ -215,12 +223,45 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   if (status) { where.push('status = ?'); params.push(status); }
   if (deviceType) { where.push('device_type = ?'); params.push(deviceType); }
   if (scope && !scope.all) {
-    if (scope.vlans.length === 0) {
+    const scopeParts = [];
+    const scopeParams = [];
+    const fullVlans = scope.fullVlans || [];
+    const planIds = scope.planIds || [];
+    // 兼容旧 scope：仅有 vlans、无 fullVlans/planIds 时按原逻辑（裸编号 + plan 令牌）
+    if (!scope.fullVlans && !scope.planIds && scope.vlans && scope.vlans.length) {
+      for (const tok of scope.vlans) {
+        const m = String(tok).match(/^plan:(\d+)$/);
+        if (m) planIds.push(Number(m[1]));
+        else fullVlans.push(String(tok));
+      }
+    }
+    if (fullVlans.length) {
+      scopeParts.push(`vlan IN (${fullVlans.map(() => '?').join(',')})`);
+      scopeParams.push(...fullVlans);
+    }
+    for (const pid of planIds) {
+      const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(pid);
+      if (!plan) continue;
+      if (plan.subnet) {
+        const parsed = parseCidr(plan.subnet);
+        if (parsed) {
+          scopeParts.push('(vlan = ? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)');
+          scopeParams.push(plan.vlan, parsed.network, parsed.broadcast);
+        } else {
+          scopeParts.push('vlan = ?');
+          scopeParams.push(plan.vlan);
+        }
+      } else {
+        // 动态池：该 VLAN 下无 IPv4 或不在其它同号有网段规划范围内的记录较难精确切分，按 vlan 收窄
+        scopeParts.push('vlan = ?');
+        scopeParams.push(plan.vlan);
+      }
+    }
+    if (scopeParts.length === 0) {
       where.push('1 = 0');
     } else {
-      const placeholders = scope.vlans.map(() => '?').join(',');
-      where.push(`vlan IN (${placeholders})`);
-      params.push(...scope.vlans);
+      where.push('(' + scopeParts.join(' OR ') + ')');
+      params.push(...scopeParams);
     }
   }
   if (onlyDuplicate === '1') {
@@ -231,6 +272,16 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
       const placeholders = dupIps.map(() => '?').join(',');
       where.push(`ip IN (${placeholders})`);
       params.push(...dupIps);
+    }
+  }
+  if (onlyDuplicateIpv6 === '1') {
+    const dupKeys = [...getDuplicateIpv6Set()];
+    if (dupKeys.length === 0) {
+      where.push('1 = 0');
+    } else {
+      const placeholders = dupKeys.map(() => '?').join(',');
+      where.push(`ipv6_sort IN (${placeholders})`);
+      params.push(...dupKeys);
     }
   }
   if (onlyMacConflict === '1') {
@@ -268,7 +319,8 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
 
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
+  const dupIpv6Set = getDuplicateIpv6Set();
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); r.is_duplicate_ipv6 = Boolean(r.ipv6_sort) && dupIpv6Set.has(r.ipv6_sort); });
 
   return { rows, total, page, perPage, totalPages: Math.ceil(total / perPage) };
 }
@@ -306,11 +358,18 @@ function parsePoolRangeServer(plan, parsed) {
 }
 
 function validateIpForVlan(ip, vlanToken) {
-  if (!ip || !vlanToken) return null;
+  if (!ip) return null;
+  if (!vlanToken || !String(vlanToken).trim()) {
+    const planByIp = lookupPlanByIp(ip);
+    if (!planByIp) {
+      throw new UserError('该 IP 不属于任何已规划的网段，请手动选择 VLAN');
+    }
+    vlanToken = `plan:${planByIp.id}`;
+  }
   const plan = getPlanForVlanToken(vlanToken);
   if (plan && plan.subnet) {
     if (!isValidIp(ip) || !ipInCidr(ip, plan.subnet)) {
-      throw new Error(`IP地址必须在所选VLAN网段（${plan.subnet}）范围内`);
+      throw new UserError(`IP地址必须在所选VLAN网段（${plan.subnet}）范围内`);
     }
     const parsed = parseCidr(plan.subnet);
     const { rangeStart, rangeEnd } = parsePoolRangeServer(plan, parsed);
@@ -318,7 +377,7 @@ function validateIpForVlan(ip, vlanToken) {
     const gatewayInt = plan.gateway && plan.gateway !== '-' ? ipToInt(plan.gateway) : null;
     const gatewayOffset = gatewayInt !== null ? (gatewayInt - parsed.network) >>> 0 : null;
     if (hostOffset !== gatewayOffset && (hostOffset < rangeStart || hostOffset > rangeEnd)) {
-      throw new Error(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
+      throw new UserError(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
     }
     return plan;
   }
@@ -327,7 +386,7 @@ function validateIpForVlan(ip, vlanToken) {
     const matched = plans.find(candidate => candidate.subnet && ipInCidr(ip, candidate.subnet));
     if (!matched) {
       const subnets = plans.map(p => p.subnet).filter(Boolean).join(', ');
-      throw new Error(`IP地址必须在所选VLAN网段（${subnets}）范围内`);
+      throw new UserError(`IP地址必须在所选VLAN网段（${subnets}）范围内`);
     }
     const parsed = parseCidr(matched.subnet);
     const { rangeStart, rangeEnd } = parsePoolRangeServer(matched, parsed);
@@ -335,7 +394,7 @@ function validateIpForVlan(ip, vlanToken) {
     const gatewayInt = matched.gateway && matched.gateway !== '-' ? ipToInt(matched.gateway) : null;
     const gatewayOffset = gatewayInt !== null ? (gatewayInt - parsed.network) >>> 0 : null;
     if (hostOffset !== gatewayOffset && (hostOffset < rangeStart || hostOffset > rangeEnd)) {
-      throw new Error(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
+      throw new UserError(`IP地址超出该VLAN可用池范围（${rangeStart}-${rangeEnd}）`);
     }
     return matched;
   }
@@ -383,13 +442,13 @@ function normalizeRecordIpv6(data, vlanToken) {
     return { ipv6: null, ipv6Sort: null };
   }
   if (!ipv6) return { ipv6: null, ipv6Sort: null };
-  if (!isValidIpv6(ipv6)) throw new Error('IPv6 地址格式不合法');
+  if (!isValidIpv6(ipv6)) throw new UserError('IPv6 地址格式不合法');
   if (plan.ipv6_subnet) {
     if (!isValidIpv6Cidr(plan.ipv6_subnet)) {
-      throw new Error('该 VLAN 的 IPv6 网段配置无效，请先在数据字典中修正');
+      throw new UserError('该 VLAN 的 IPv6 网段配置无效，请先在数据字典中修正');
     }
     if (!ipv6InCidr(ipv6, plan.ipv6_subnet)) {
-      throw new Error(`IPv6 地址必须在所选 VLAN 网段（${plan.ipv6_subnet}）范围内`);
+      throw new UserError(`IPv6 地址必须在所选 VLAN 网段（${plan.ipv6_subnet}）范围内`);
     }
   }
   return { ipv6, ipv6Sort: ipv6SortKey(ipv6) };
@@ -402,13 +461,13 @@ function createRecord(data) {
   else if (data.mac !== undefined) data.mac = null;
   if (!isDynamic) {
     if (!data.ip || !String(data.ip).trim()) {
-      throw new Error('IP地址为必填项');
+      throw new UserError('IP地址为必填项');
     }
     if (data.ip && !isValidIp(data.ip)) {
-      throw new Error('IP地址格式不合法');
+      throw new UserError('IP地址格式不合法');
     }
   } else if (data.ip && !isValidIp(data.ip)) {
-    throw new Error('IP地址格式不合法');
+    throw new UserError('IP地址格式不合法');
   }
   const gateway = data.gateway || (data.ip ? lookupGateway(data.ip) : null);
   const vlan = resolveVlanToken(data.vlan) || (data.ip ? lookupVlanByIp(data.ip) : null);
@@ -431,41 +490,43 @@ function createRecord(data) {
 function updateRecord(id, data) {
   checkStringFields(data);
   const existing = getRecord(id);
+  if (!existing) return null;
+  // H-1: undefined = 未提供（保留旧值）；显式 ''/null = 清空
+  const pick = (field) => (data[field] !== undefined ? (data[field] || null) : existing[field]);
   if (data.mac !== undefined && data.mac !== null && String(data.mac).trim() !== '') data.mac = normalizeMac(data.mac);
   else if (data.mac !== undefined) data.mac = null;
-  if (!existing) return null;
-  const isDynamic = isDynamicVlanToken(data.vlan || existing.vlan);
+  const nextIp = data.ip !== undefined ? (data.ip || null) : existing.ip;
+  const nextVlanToken = data.vlan !== undefined ? data.vlan : existing.vlan;
+  const isDynamic = isDynamicVlanToken(nextVlanToken);
   if (!isDynamic) {
-    if (!data.ip || !String(data.ip).trim()) {
-      throw new Error('IP地址为必填项');
+    if (!nextIp || !String(nextIp).trim()) {
+      throw new UserError('IP地址为必填项');
     }
-    if (data.ip && !isValidIp(data.ip)) {
-      throw new Error('IP地址格式不合法');
+    if (nextIp && !isValidIp(nextIp)) {
+      throw new UserError('IP地址格式不合法');
     }
-  } else if (data.ip && !isValidIp(data.ip)) {
-    throw new Error('IP地址格式不合法');
+  } else if (nextIp && !isValidIp(nextIp)) {
+    throw new UserError('IP地址格式不合法');
   }
-  const gateway = data.gateway !== undefined ? data.gateway : (data.ip ? lookupGateway(data.ip) : null);
-  const vlan = resolveVlanToken(data.vlan) || existing.vlan;
-  const resolvedIp = data.ip || existing.ip || null;
-  const ipSort = resolvedIp ? ipToInt(resolvedIp) : null;
-  const vlanTokenForIpv6 = data.vlan || existing.vlan;
-  const ipv6Source = data.ipv6 !== undefined ? data : existing;
+  const gateway = data.gateway !== undefined ? (data.gateway || null) : (existing.gateway || (nextIp ? lookupGateway(nextIp) : null));
+  const vlan = resolveVlanToken(nextVlanToken) || existing.vlan;
+  const ipSort = nextIp ? ipToInt(nextIp) : null;
   const { ipv6, ipv6Sort } = normalizeRecordIpv6(
     { ipv6: data.ipv6 !== undefined ? data.ipv6 : existing.ipv6 },
-    vlanTokenForIpv6
+    nextVlanToken
   );
+  const mac = data.mac !== undefined ? data.mac : existing.mac;
   db.prepare(`
     UPDATE ip_records SET
       vlan=?, ip=?, ip_sort=?, ipv6=?, ipv6_sort=?, mac=?, device_type=?, device_name=?, location=?, department=?, user_name=?, remark=?, status=?, registered_at=?, upper_switch=?, switch_port=?, sunlogin_id=?, gateway=?, updated_at=datetime('now','localtime')
     WHERE id=?
   `).run(
-    vlan, data.ip || null, ipSort, ipv6, ipv6Sort, data.mac || null, data.device_type || null,
-    data.device_name || null, data.location || null, data.department || null,
-    data.user_name || null, data.remark || null, data.status || null,
-    data.registered_at || existing.registered_at,
-    data.upper_switch || null, data.switch_port || null,
-    data.sunlogin_id || null, gateway, id
+    vlan, nextIp, ipSort, ipv6, ipv6Sort, mac, pick('device_type'),
+    pick('device_name'), pick('location'), pick('department'),
+    pick('user_name'), pick('remark'), pick('status'),
+    data.registered_at !== undefined ? (data.registered_at || existing.registered_at) : existing.registered_at,
+    pick('upper_switch'), pick('switch_port'),
+    pick('sunlogin_id'), gateway, id
   );
   return getRecord(id);
 }
@@ -475,16 +536,78 @@ function deleteRecord(id) {
 }
 
 // --- 权限范围（scope）辅助：统计、字典等查询统一使用 ---
-function scopeClause(scope, column = 'vlan') {
+function buildScopeOrClause(scope, column = 'vlan') {
   if (!scope || scope.all) return { clause: '', params: [] };
-  if (!scope.vlans || scope.vlans.length === 0) return { clause: ' AND 1 = 0', params: [] };
-  return { clause: ` AND ${column} IN (${scope.vlans.map(() => '?').join(',')})`, params: [...scope.vlans] };
+  const parts = [];
+  const params = [];
+  const fullVlans = [...(scope.fullVlans || [])];
+  const planIds = [...(scope.planIds || [])];
+  if (!scope.fullVlans && !scope.planIds && scope.vlans && scope.vlans.length) {
+    for (const tok of scope.vlans) {
+      const m = String(tok).match(/^plan:(\d+)$/);
+      if (m) planIds.push(Number(m[1]));
+      else fullVlans.push(String(tok));
+    }
+  }
+  if (fullVlans.length) {
+    parts.push(`${column} IN (${fullVlans.map(() => '?').join(',')})`);
+    params.push(...fullVlans);
+  }
+  for (const pid of planIds) {
+    const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(pid);
+    if (!plan) continue;
+    if (plan.subnet) {
+      const parsed = parseCidr(plan.subnet);
+      if (parsed) {
+        parts.push(`(${column} = ? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)`);
+        params.push(plan.vlan, parsed.network, parsed.broadcast);
+      } else {
+        parts.push(`${column} = ?`);
+        params.push(plan.vlan);
+      }
+    } else {
+      parts.push(`${column} = ?`);
+      params.push(plan.vlan);
+    }
+  }
+  if (!parts.length) return { clause: ' AND 1 = 0', params: [] };
+  return { clause: ' AND (' + parts.join(' OR ') + ')', params };
+}
+
+function scopeClause(scope, column = 'vlan') {
+  return buildScopeOrClause(scope, column);
 }
 
 function planInScope(scope, plan) {
   if (!scope || scope.all) return true;
   if (!plan) return false;
-  return scope.vlans.includes(plan.vlan) || scope.vlans.includes(`plan:${plan.id}`);
+  const fullVlans = scope.fullVlans || [];
+  const planIds = scope.planIds || [];
+  if (fullVlans.includes(String(plan.vlan))) return true;
+  if (planIds.includes(Number(plan.id))) return true;
+  return false;
+}
+
+/** 单条 IP 记录是否在管理员可读/可管范围内（网段级） */
+function recordInScope(scope, record) {
+  if (!scope || scope.all) return true;
+  if (!record) return false;
+  const fullVlans = scope.fullVlans || [];
+  if (fullVlans.includes(String(record.vlan))) return true;
+  const planIds = scope.planIds || [];
+  for (const pid of planIds) {
+    const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(pid);
+    if (!plan || String(plan.vlan) !== String(record.vlan)) continue;
+    if (plan.subnet) {
+      const parsed = parseCidr(plan.subnet);
+      if (parsed && record.ip_sort != null && record.ip_sort >= parsed.network && record.ip_sort <= parsed.broadcast) return true;
+      // 无 ip_sort 时尝试用 IP 字符串
+      if (parsed && record.ip && isValidIp(record.ip) && ipInCidr(record.ip, plan.subnet)) return true;
+    } else if (!record.ip) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function getDashboardStats(scope = null) {
@@ -604,7 +727,8 @@ function getSubnetRecords(prefix, sort = 'ip', order = 'asc', vlan = null) {
   }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
+  const dupIpv6Set = getDuplicateIpv6Set();
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); r.is_duplicate_ipv6 = Boolean(r.ipv6_sort) && dupIpv6Set.has(r.ipv6_sort); });
   return rows;
 }
 
@@ -624,7 +748,8 @@ function getSubnetRecordsByCidr(cidr, sort = 'ip', order = 'asc', vlan = null) {
   }
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
+  const dupIpv6Set = getDuplicateIpv6Set();
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); r.is_duplicate_ipv6 = Boolean(r.ipv6_sort) && dupIpv6Set.has(r.ipv6_sort); });
   return rows;
 }
 
@@ -637,13 +762,14 @@ function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
   const rows = db.prepare(`SELECT * FROM ip_records WHERE vlan = ? ORDER BY ${sortCol} ${sortDir}`).all(vlan);
   const dupSet = getDuplicateIpSet();
   const macConflictSet = getMacConflictMacSet();
-  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); });
+  const dupIpv6Set = getDuplicateIpv6Set();
+  rows.forEach(r => { r.is_duplicate = Boolean(r.ip) && dupSet.has(r.ip); r.is_mac_conflict = macConflictSet.has(macKey(r.mac)); r.is_duplicate_ipv6 = Boolean(r.ipv6_sort) && dupIpv6Set.has(r.ipv6_sort); });
   return rows;
 }
 
 module.exports = {
-  scopeClause, planInScope,
-  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, isValidIpv6, isValidIpv6Cidr, ipv6InCidr, ipv6SortKey, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
+  scopeClause, planInScope, recordInScope, buildScopeOrClause,
+  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getDuplicateIpv6Set, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, isValidIpv6, isValidIpv6Cidr, ipv6InCidr, ipv6SortKey, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
   getSubnetRecords, getSubnetRecordsByCidr, getVlanRecords,

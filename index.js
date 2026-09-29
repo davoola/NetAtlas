@@ -59,7 +59,11 @@ app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'");
-  if (IS_PROD && req.secure) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  // 仅在 HTTPS 请求上启用 HSTS。反向代理部署请配置 TRUST_PROXY，使 req.secure 正确；
+  // 纯 HTTP 内网部署不要强开 HSTS。需要强制时可设 FORCE_HSTS=1。
+  if (IS_PROD && (req.secure || process.env.FORCE_HSTS === '1')) {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+  }
   next();
 });
 

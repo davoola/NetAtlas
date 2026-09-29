@@ -30,30 +30,37 @@ class SqliteSessionStore extends session.Store {
   }
 
   get(sid, cb) {
+    let result, err;
     try {
       const row = db.prepare('SELECT sess, expire FROM sessions WHERE sid = ?').get(sid);
-      if (!row) return cb(null, null);
-      if (row.expire < Date.now()) {
+      if (!row) result = null;
+      else if (row.expire < Date.now()) {
         db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid);
-        return cb(null, null);
+        result = null;
+      } else {
+        result = JSON.parse(row.sess);
       }
-      cb(null, JSON.parse(row.sess));
-    } catch (e) { cb(e); }
+    } catch (e) { err = e; }
+    if (err) return cb(err);
+    return cb(null, result);
   }
 
   set(sid, sess, cb) {
+    let err;
     try {
       const expire = sess && sess.cookie && sess.cookie.expires
         ? new Date(sess.cookie.expires).getTime() : Date.now() + DEFAULT_TTL_MS;
       const userId = sess && sess.user ? sess.user.id : null;
       db.prepare('INSERT INTO sessions (sid, sess, expire, user_id) VALUES (?,?,?,?) ON CONFLICT(sid) DO UPDATE SET sess=excluded.sess, expire=excluded.expire, user_id=excluded.user_id')
         .run(sid, JSON.stringify(sess), expire, userId);
-      cb && cb(null);
-    } catch (e) { cb && cb(e); }
+    } catch (e) { err = e; }
+    if (cb) cb(err || null);
   }
 
   destroy(sid, cb) {
-    try { db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid); cb && cb(null); } catch (e) { cb && cb(e); }
+    let err;
+    try { db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid); } catch (e) { err = e; }
+    if (cb) cb(err || null);
   }
 
   /** 撤销某用户的全部会话（可保留当前会话）。 */

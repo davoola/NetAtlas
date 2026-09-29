@@ -31,7 +31,8 @@ function publicMessage(e, fallback = '操作失败，请稍后重试') {
   }
   if (INTERNAL_TYPES.some(T => e instanceof T)) return fallback;
   if (e.code && typeof e.code === 'string' && /^(E[A-Z]+|ERR_)/.test(e.code)) return fallback; // 文件系统/Node 内部错误
-  return e.message || fallback;
+  // 仅 UserError（expose）可向前端返回原文；其它 Error 使用通用提示，避免泄漏内部结构
+  return fallback;
 }
 
 function logError(req, e, label = '') {

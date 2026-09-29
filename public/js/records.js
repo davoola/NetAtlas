@@ -231,7 +231,7 @@ function renderRecords(data) {
     tbody.innerHTML = data.rows.map(r => `
       <tr class="${r.is_duplicate ? 'row-duplicate' : ''} ${r.is_mac_conflict ? 'row-mac-conflict' : ''}">
         <td>${escapeHtml(r.ip || '-')} ${r.is_duplicate ? '<span class="dup-badge">重复</span>' : ''} ${r.is_mac_conflict ? '<span class="mac-conflict-badge">MAC冲突</span>' : ''}</td>
-        <td class="col-ipv6" style="display:${showIpv6 ? '' : 'none'}">${escapeHtml(r.ipv6 || '-')}</td>
+        <td class="col-ipv6" style="display:${showIpv6 ? '' : 'none'}">${escapeHtml(r.ipv6 || '-')} ${r.is_duplicate_ipv6 ? '<span class="dup-badge">重复</span>' : ''}</td>
         <td>${escapeHtml(r.mac || '-')}</td>
         <td>${escapeHtml(r.device_name || '-')}</td>
         <td>${escapeHtml(r.department || '-')}</td>

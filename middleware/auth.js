@@ -49,39 +49,118 @@ function resolveVlanToken(token) {
   return token;
 }
 
-function canManageVlan(req, vlan) {
+function getAdminPermTokens(userId) {
+  return db.prepare('SELECT vlan FROM admin_vlan_permissions WHERE user_id = ?').all(userId)
+    .map(p => String(p.vlan || '').trim())
+    .filter(Boolean);
+}
+
+/**
+ * 是否可管理指定 VLAN/规划。
+ * @param {string} vlanToken  plan:ID 或裸 VLAN 编号
+ * @param {string} [ip]       可选；裸编号 + 仅 plan 授权时，用 IP 判断是否落在已授权网段内
+ *
+ * 规则：
+ * - superadmin：全部
+ * - 精确命中授权令牌（plan:ID 或裸编号）
+ * - plan:ID：若拥有该编号的「裸 VLAN 全量授权」也可
+ * - 裸编号：仅当拥有裸编号全量授权，或（提供了 IP）且 IP 落在某个已授权 plan 的网段内
+ */
+function canManageVlan(req, vlanToken, ip) {
   if (!req.session.user) return false;
   if (req.session.user.role === 'superadmin') return true;
-  if (req.session.user.role === 'admin') {
-    const token = String(vlan || '');
-    if (!token) return false;
-    const resolved = resolveVlanToken(vlan);
-    // 授权项既可能以 VLAN 编号保存，也可能以 plan:ID 令牌保存（用户管理界面保存的是后者），统一解析为 VLAN 编号后比较
-    const perms = db.prepare('SELECT vlan FROM admin_vlan_permissions WHERE user_id = ?').all(req.session.user.id);
-    return perms.some(p => p.vlan === token || (resolved !== null && (p.vlan === resolved || resolveVlanToken(p.vlan) === resolved)));
+  if (req.session.user.role !== 'admin') return false;
+
+  const token = String(vlanToken || '').trim();
+  if (!token) return false;
+  const perms = getAdminPermTokens(req.session.user.id);
+  if (perms.includes(token)) return true;
+
+  const planMatch = token.match(/^plan:(\d+)$/);
+  if (planMatch) {
+    const plan = db.prepare('SELECT id, vlan, subnet FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
+    if (!plan) return false;
+    // 裸 VLAN 编号全量授权覆盖该编号下所有规划
+    return perms.includes(String(plan.vlan));
+  }
+
+  // token 为裸 VLAN 编号：plan 级授权时必须结合 IP 落在对应网段
+  if (ip) {
+    try {
+      const ipService = require('../services/ipService');
+      if (!ipService.isValidIp(ip)) return false;
+      for (const p of perms) {
+        const m = String(p).match(/^plan:(\d+)$/);
+        if (!m) continue;
+        const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(Number(m[1]));
+        if (!plan || String(plan.vlan) !== token) continue;
+        if (!plan.subnet) return true;
+        if (ipService.ipInCidr(ip, plan.subnet)) return true;
+      }
+    } catch (e) {
+      return false;
+    }
   }
   return false;
 }
 
+/** 是否可管理某条已有登记记录（按规划网段精确判断） */
+function canManageRecord(req, record) {
+  if (!req.session.user) return false;
+  if (req.session.user.role === 'superadmin') return true;
+  if (req.session.user.role !== 'admin' || !record) return false;
+  const scope = getReadableVlanScope(req);
+  const ipService = require('../services/ipService');
+  return ipService.recordInScope(scope, record);
+}
+
 function canManageVlanMiddleware(req, res, next) {
   const vlan = req.body.vlan || req.params.vlan;
-  if (!canManageVlan(req, vlan)) {
-    return res.status(403).json({ error: '您没有管理该 VLAN 的权限' });
+  const ip = req.body.ip;
+  if (!canManageVlan(req, vlan, ip)) {
+    return res.status(403).json({ error: '您没有管理该 VLAN / 网段的权限' });
   }
   next();
 }
 
+/**
+ * 可读范围：
+ * - fullVlans: 裸 VLAN 编号（覆盖该编号下全部网段）
+ * - planIds: 仅这些规划 ID 对应的网段
+ * - vlans: 原始令牌列表
+ */
 function getReadableVlanScope(req) {
-  if (!req.session.user) return { all: false, vlans: [] };
+  if (!req.session.user) return { all: false, vlans: [], fullVlans: [], planIds: [] };
   const role = req.session.user.role;
-  if (role === 'superadmin' || role === 'viewer') return { all: true };
+  if (role === 'superadmin' || role === 'viewer') return { all: true, vlans: [], fullVlans: [], planIds: [] };
   if (role === 'admin') {
-    const rows = db.prepare('SELECT vlan FROM admin_vlan_permissions WHERE user_id = ?').all(req.session.user.id);
-    const vlans = rows.map(r => r.vlan);
-    const resolved = vlans.map(v => resolveVlanToken(v)).filter(Boolean);
-    return { all: false, vlans: [...new Set([...vlans, ...resolved])] };
+    const rows = getAdminPermTokens(req.session.user.id);
+    const fullVlans = [];
+    const planIds = [];
+    const tokens = [];
+    for (const tok of rows) {
+      tokens.push(tok);
+      const m = tok.match(/^plan:(\d+)$/);
+      if (m) planIds.push(Number(m[1]));
+      else fullVlans.push(tok);
+    }
+    return {
+      all: false,
+      vlans: [...new Set(tokens)],
+      fullVlans: [...new Set(fullVlans)],
+      planIds: [...new Set(planIds)],
+    };
   }
-  return { all: false, vlans: [] };
+  return { all: false, vlans: [], fullVlans: [], planIds: [] };
 }
 
-module.exports = { enforcePasswordChange, requireAuth, requireRole, canManageVlan, canManageVlanMiddleware, getReadableVlanScope };
+module.exports = {
+  enforcePasswordChange,
+  requireAuth,
+  requireRole,
+  canManageVlan,
+  canManageRecord,
+  canManageVlanMiddleware,
+  getReadableVlanScope,
+  resolveVlanToken,
+};
