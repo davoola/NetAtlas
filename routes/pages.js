@@ -31,7 +31,7 @@ router.get('/dashboard', requireAuth, (req, res) => {
 });
 
 router.get('/records', requireAuth, (req, res) => {
-  res.render('pages/records', { title: 'IP登记台账', activePage: 'records', extraScript: '/js/records.js' });
+  res.render('pages/records', { title: 'IP台账管理', activePage: 'records', extraScript: '/js/records.js' });
 });
 
 router.get('/subnets', requireAuth, (req, res) => {
