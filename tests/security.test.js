@@ -186,9 +186,12 @@ test('导入：Excel 正常解析；行数超限被拒绝；原型污染表头�
   const rows = ['VLAN,IP地址'].concat(Array.from({ length: 60 }, (_, i) => `10,10.0.10.${100 + i}`)).join('\n');
   fd = new FormData();
   fd.append('file', new Blob([rows]), 'big.csv'); fd.append('strategy', 'skip');
+  // 管理员无导入权限（仅超级管理员）→ 403；行数上限由超管路径覆盖
   const res = await adm.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } });
-  assert.strictEqual(res.status, 400);
-  assert.match((await res.json()).error, /行数超过上限/);
+  assert.strictEqual(res.status, 403);
+  const resSa = await sa.req('POST', '/api/import/csv', { body: fd, headers: { accept: 'application/json' } });
+  assert.strictEqual(resSa.status, 400);
+  assert.match((await resSa.json()).error, /行数超过上限/);
   assert.strictEqual(({}).polluted, undefined);
 });
 
@@ -442,3 +445,38 @@ test('兼容性：bcryptjs 3 可校验旧版(bcryptjs 2.4.3)生成的哈希', as
   assert.strictEqual((await c.api('GET', '/api/stats')).status, 200);
   assert.strictEqual((await new Client().login('legacyhash', 'wrong-password')).status, 401);
 });
+
+
+test('网段规划规范化与重叠拒绝（M-2）', async () => {
+  // 规范 CIDR：10.5.0.7/24 → 10.5.0.0/24
+  let r = await sa.api('POST', '/api/dict/vlan-plans', {
+    vlan: '91', name: 'norm-test', subnet: '10.5.0.7/24', gateway: '10.5.0.1', is_dynamic: 0,
+  });
+  assert.strictEqual(r.status, 200);
+  let plans = await r.json();
+  let p = plans.find(x => String(x.vlan) === '91' && (x.subnet || '').includes('10.5.0'));
+  assert.ok(p, '应创建规划');
+  assert.strictEqual(p.subnet, '10.5.0.0/24');
+
+  // 带空格入库应被 trim+规范化
+  r = await sa.api('POST', '/api/dict/vlan-plans', {
+    vlan: '92', name: 'space-test', subnet: ' 10.6.0.0/24 ', gateway: '10.6.0.1', is_dynamic: 0,
+  });
+  assert.strictEqual(r.status, 200);
+  plans = await r.json();
+  p = plans.find(x => String(x.vlan) === '92');
+  assert.strictEqual(p.subnet, '10.6.0.0/24');
+
+  // 与已有 /25 重叠的 /24 应拒绝
+  r = await sa.api('POST', '/api/dict/vlan-plans', {
+    vlan: '93', name: 'half', subnet: '10.50.0.0/25', gateway: '10.50.0.1', is_dynamic: 0,
+  });
+  assert.strictEqual(r.status, 200);
+  r = await sa.api('POST', '/api/dict/vlan-plans', {
+    vlan: '94', name: 'overlap', subnet: '10.50.0.0/24', gateway: '10.50.0.1', is_dynamic: 0,
+  });
+  assert.strictEqual(r.status, 400);
+  const body = await r.json();
+  assert.match(String(body.error || ''), /重叠/);
+});
+

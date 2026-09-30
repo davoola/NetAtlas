@@ -38,7 +38,7 @@ router.post('/login', (req, res) => {
 
   if (!user || !user.enabled || !ok) {
     limiter.recordFailure(ip, username);
-    try { dictService.auditLog(null, 'login_failed', `登录失败: 用户名 ${username.slice(0, 64)}，来源 ${ip}`); } catch (e) { /* ignore */ }
+    try { dictService.auditLog(null, 'login_failed', `登录失败: 用户名 ${username.slice(0, 64)}，来源 ${ip}`, { actor_ip: ip }); } catch (e) { /* ignore */ }
     return renderLogin(res, 401, siteName, '用户名或密码错误');
   }
 
@@ -52,7 +52,7 @@ router.post('/login', (req, res) => {
     req.session.user = sessionUser;
     req.session.save((saveErr) => {
       if (saveErr) return renderLogin(res, 500, siteName, '会话初始化失败');
-      dictService.auditLog(sessionUser, 'login', `用户 ${user.username} 登录`);
+      dictService.auditLog(sessionUser, 'login', `用户 ${user.username} 登录`, { actor_ip: ip });
       res.redirect('/');
     });
   });
@@ -60,7 +60,7 @@ router.post('/login', (req, res) => {
 
 router.post('/logout', (req, res) => {
   if (req.session.user) {
-    dictService.auditLog(req.session.user, 'logout', `用户 ${req.session.user.username} 退出`);
+    dictService.auditLog(req.session.user, 'logout', `用户 ${req.session.user.username} 退出`, { actor_ip: req.ip });
   }
   req.session.destroy((err) => {
     if (err) console.error('会话销毁失败:', err.message);

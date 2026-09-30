@@ -154,14 +154,19 @@ function setAdminVlanPermissions(userId, vlans) {
     throw new UserError('VLAN 权限参数不正确');
   }
   if (!findById(userId)) throw new UserError('用户不存在', 404);
-  const validTokens = new Set();
-  for (const row of db.prepare('SELECT id, vlan FROM vlan_plans').all()) {
-    validTokens.add(String(row.vlan));
-    validTokens.add('plan:' + row.id);
-  }
-  const cleaned = vlans.map(v => String(v).trim()).filter(Boolean);
-  for (const tok of cleaned) {
-    if (!validTokens.has(tok)) throw new UserError('无效的 VLAN 授权项: ' + tok);
+  // 仅接受 plan:ID，避免裸 VLAN 编号导致「同号全部网段（含未来新建）」授权蔓延
+  const validPlanTokens = new Set(
+    db.prepare('SELECT id FROM vlan_plans').all().map(row => 'plan:' + row.id)
+  );
+  const cleaned = [];
+  for (const v of vlans) {
+    const tok = String(v).trim();
+    if (!tok) continue;
+    if (!/^plan:\d+$/.test(tok)) {
+      throw new UserError('VLAN 权限仅支持按网段规划授权（plan:ID），不支持裸 VLAN 编号: ' + tok);
+    }
+    if (!validPlanTokens.has(tok)) throw new UserError('无效的 VLAN 授权项: ' + tok);
+    cleaned.push(tok);
   }
   db.transaction(() => {
     db.prepare('DELETE FROM admin_vlan_permissions WHERE user_id = ?').run(userId);

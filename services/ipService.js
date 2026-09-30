@@ -27,6 +27,27 @@ function parseCidr(cidr) {
   return { network, broadcast, prefix, mask };
 }
 
+
+/** 将 CIDR 规范为「网络地址/前缀」（去空白、非网络位清零） */
+function normalizeSubnetCidr(raw) {
+  if (raw === null || raw === undefined) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  const parsed = parseCidr(s);
+  if (!parsed) return null;
+  const n = parsed.network >>> 0;
+  const dotted = [(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255].join('.');
+  return `${dotted}/${parsed.prefix}`;
+}
+
+/** 两个 IPv4 CIDR 是否地址空间重叠（含相等、包含） */
+function cidrsOverlap(a, b) {
+  const pa = parseCidr(a);
+  const pb = parseCidr(b);
+  if (!pa || !pb) return false;
+  return pa.network <= pb.broadcast && pb.network <= pa.broadcast;
+}
+
 function ipInCidr(ip, cidr) {
   const intIp = ipToInt(ip);
   const parsed = parseCidr(cidr);
@@ -196,7 +217,7 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
   if (vlan) {
     const planMatch = String(vlan).match(/^plan:(\d+)$/);
     if (planMatch) {
-      // 同一 VLAN 编号可有多条不同网段：按规划 ID 同时限制 vlan 编号与子网范围
+      // 同一 VLAN 编号可有多条不同网段：按规划限制；动态池排除同号静态兄弟网段
       const plan = db.prepare('SELECT * FROM vlan_plans WHERE id = ?').get(Number(planMatch[1]));
       if (plan) {
         where.push('vlan = ?');
@@ -205,14 +226,27 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
           const parsed = parseCidr(plan.subnet);
           if (parsed) {
             if (plan.enable_ipv6) {
-              where.push('((ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?) OR (ipv6 IS NOT NULL AND trim(ipv6) != \'\'))');
+              where.push("((ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?) OR (ipv6 IS NOT NULL AND trim(ipv6) != ''))");
               params.push(parsed.network, parsed.broadcast);
             } else {
               where.push('ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?');
               params.push(parsed.network, parsed.broadcast);
             }
           }
+        } else {
+          const sibs = db.prepare(
+            "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+          ).all(plan.vlan, plan.id);
+          for (const s of sibs) {
+            const sp = parseCidr(s.subnet);
+            if (sp) {
+              where.push('NOT (ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)');
+              params.push(sp.network, sp.broadcast);
+            }
+          }
         }
+      } else {
+        where.push('1 = 0');
       }
     } else {
       where.push('vlan = ?');
@@ -252,9 +286,21 @@ function listRecords({ page = 1, perPage = 20, search = '', vlan = '', departmen
           scopeParams.push(plan.vlan);
         }
       } else {
-        // 动态池：该 VLAN 下无 IPv4 或不在其它同号有网段规划范围内的记录较难精确切分，按 vlan 收窄
-        scopeParts.push('vlan = ?');
-        scopeParams.push(plan.vlan);
+        // 动态池：同 VLAN 下排除落在其它静态兄弟网段内的记录
+        const sibs = db.prepare(
+          "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+        ).all(plan.vlan, plan.id);
+        let frag = 'vlan = ?';
+        const ps = [plan.vlan];
+        for (const s of sibs) {
+          const sp = parseCidr(s.subnet);
+          if (sp) {
+            frag += ' AND NOT (ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)';
+            ps.push(sp.network, sp.broadcast);
+          }
+        }
+        scopeParts.push('(' + frag + ')');
+        scopeParams.push(...ps);
       }
     }
     if (scopeParts.length === 0) {
@@ -346,16 +392,31 @@ function getPlanForVlanToken(token) {
 }
 
 function parsePoolRangeServer(plan, parsed) {
-  let rangeStart = 1, rangeEnd = 254;
+  // 始终以 CIDR 可用主机范围为上界；说明文字仅在可解析时与之取交集，避免退回 1–254 或误解析
+  if (!parsed) return { rangeStart: 1, rangeEnd: 254 };
+  const size = (parsed.broadcast - parsed.network) >>> 0;
+  let rangeStart = parsed.prefix >= 31 ? 0 : 1;
+  let rangeEnd = parsed.prefix >= 31 ? size : (size > 1 ? size - 1 : size);
   if (plan && plan.address_pool_note) {
-    const m = plan.address_pool_note.match(/\.?(\d{1,3})\s*[-–~至到]\s*\.?(\d{1,3})/);
-    if (m) { rangeStart = parseInt(m[1], 10); rangeEnd = parseInt(m[2], 10); }
-  } else if (parsed) {
-    const totalHosts = parsed.broadcast - parsed.network;
-    rangeEnd = totalHosts > 2 ? totalHosts - 1 : totalHosts;
+    const note = String(plan.address_pool_note);
+    const m = note.match(/\.(\d{1,3})\s*[-–~至到]\s*\.?(\d{1,3})/);
+    if (m) {
+      const a = parseInt(m[1], 10);
+      const b = parseInt(m[2], 10);
+      if (Number.isFinite(a) && Number.isFinite(b) && a <= b && a >= 0 && b <= 255) {
+        rangeStart = Math.max(rangeStart, a);
+        rangeEnd = Math.min(rangeEnd, b);
+      }
+    }
+  }
+  if (rangeStart > rangeEnd) {
+    // 交集为空时保持 CIDR 默认可用范围，避免误拦全部地址
+    rangeStart = parsed.prefix >= 31 ? 0 : 1;
+    rangeEnd = parsed.prefix >= 31 ? size : (size > 1 ? size - 1 : size);
   }
   return { rangeStart, rangeEnd };
 }
+
 
 function validateIpForVlan(ip, vlanToken) {
   if (!ip) return null;
@@ -566,8 +627,20 @@ function buildScopeOrClause(scope, column = 'vlan') {
         params.push(plan.vlan);
       }
     } else {
-      parts.push(`${column} = ?`);
-      params.push(plan.vlan);
+      const sibs = db.prepare(
+        "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+      ).all(plan.vlan, plan.id);
+      let frag = `${column} = ?`;
+      const ps = [plan.vlan];
+      for (const s of sibs) {
+        const sp = parseCidr(s.subnet);
+        if (sp) {
+          frag += ' AND NOT (ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)';
+          ps.push(sp.network, sp.broadcast);
+        }
+      }
+      parts.push('(' + frag + ')');
+      params.push(...ps);
     }
   }
   if (!parts.length) return { clause: ' AND 1 = 0', params: [] };
@@ -601,10 +674,18 @@ function recordInScope(scope, record) {
     if (plan.subnet) {
       const parsed = parseCidr(plan.subnet);
       if (parsed && record.ip_sort != null && record.ip_sort >= parsed.network && record.ip_sort <= parsed.broadcast) return true;
-      // 无 ip_sort 时尝试用 IP 字符串
       if (parsed && record.ip && isValidIp(record.ip) && ipInCidr(record.ip, plan.subnet)) return true;
-    } else if (!record.ip) {
-      return true;
+    } else {
+      // 动态池：IP 不得落在同号其它静态规划子网内；无 IP 视为动态池记录
+      if (!record.ip) return true;
+      const sibs = db.prepare(
+        "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+      ).all(plan.vlan, plan.id);
+      let inSibling = false;
+      for (const s of sibs) {
+        if (s.subnet && isValidIp(record.ip) && ipInCidr(record.ip, s.subnet)) { inSibling = true; break; }
+      }
+      if (!inSibling) return true;
     }
   }
   return false;
@@ -640,7 +721,19 @@ function getDashboardStats(scope = null) {
         cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?').get(plan.vlan, parsed.network, parsed.broadcast).cnt;
       }
     } else {
-      cnt = db.prepare("SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND vlan IS NOT NULL AND vlan != ''").get(plan.vlan).cnt;
+      const sibs = db.prepare(
+        "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+      ).all(plan.vlan, plan.id);
+      let sql = "SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND vlan IS NOT NULL AND vlan != ''";
+      const ps = [plan.vlan];
+      for (const s of sibs) {
+        const sp = parseCidr(s.subnet);
+        if (sp) {
+          sql += ' AND NOT (ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)';
+          ps.push(sp.network, sp.broadcast);
+        }
+      }
+      cnt = db.prepare(sql).get(...ps).cnt;
     }
     if (cnt > 0) activeVlans += 1;
   }
@@ -659,7 +752,19 @@ function getVlanStats(scope = null) {
     if (parsed) {
       cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort >= ? AND ip_sort <= ?').get(plan.vlan, parsed.network, parsed.broadcast).cnt;
     } else {
-      cnt = db.prepare('SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ?').get(plan.vlan).cnt;
+      const sibs = db.prepare(
+        "SELECT subnet FROM vlan_plans WHERE vlan = ? AND id != ? AND subnet IS NOT NULL AND TRIM(subnet) != ''"
+      ).all(plan.vlan, plan.id);
+      let sql = 'SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ?';
+      const ps = [plan.vlan];
+      for (const s of sibs) {
+        const sp = parseCidr(s.subnet);
+        if (sp) {
+          sql += ' AND NOT (ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?)';
+          ps.push(sp.network, sp.broadcast);
+        }
+      }
+      cnt = db.prepare(sql).get(...ps).cnt;
     }
     result.push({
       vlan: plan.vlan,
@@ -769,7 +874,7 @@ function getVlanRecords(vlan, sort = 'ip', order = 'asc') {
 
 module.exports = {
   scopeClause, planInScope, recordInScope, buildScopeOrClause,
-  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getDuplicateIpv6Set, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, isValidIpv6, isValidIpv6Cidr, ipv6InCidr, ipv6SortKey, ipToInt, parseCidr, ipInCidr, parsePoolRangeServer,
+  lookupGateway, lookupVlanByIp, lookupPlanByIp, getDuplicateIpSet, getDuplicateIpv6Set, getMacConflictMacSet, normalizeMac, macKey, validateIpForVlan, isValidIp, isValidIpv6, isValidIpv6Cidr, ipv6InCidr, ipv6SortKey, ipToInt, parseCidr, normalizeSubnetCidr, cidrsOverlap, ipInCidr, parsePoolRangeServer,
   listRecords, getRecord, createRecord, updateRecord, deleteRecord,
   getDashboardStats, getVlanStats, getDepartmentStats, getDeviceTypeStats,
   getSubnetRecords, getSubnetRecordsByCidr, getVlanRecords,

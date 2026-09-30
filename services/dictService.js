@@ -124,16 +124,31 @@ function normalizeVlanIpv6Fields(data) {
   return { enableIpv6, ipv6Subnet: ipv6Subnet || null, ipv6Gateway: ipv6Gateway || null };
 }
 
+function assertNoSubnetOverlap(subnet, excludeId = null) {
+  const ipService = require('./ipService');
+  const others = db.prepare("SELECT id, vlan, name, subnet FROM vlan_plans WHERE subnet IS NOT NULL AND TRIM(subnet) != ''").all();
+  for (const o of others) {
+    if (excludeId != null && Number(o.id) === Number(excludeId)) continue;
+    if (ipService.cidrsOverlap(subnet, o.subnet)) {
+      throw new UserError(`网段与已有规划重叠：VLAN ${o.vlan} ${o.name || ''}（${o.subnet}）。系统不允许大网套小网或交叉重叠`);
+    }
+  }
+}
+
 function addVlanPlan(data) {
   if (!data.vlan || !String(data.vlan).trim()) throw new UserError('VLAN编号为必填项');
+  const vlan = String(data.vlan).trim();
   const isDynamic = data.is_dynamic ? 1 : 0;
   const hasSubnet = data.subnet && String(data.subnet).trim();
   if (!isDynamic && !hasSubnet) throw new UserError('网段为必填项');
+  let subnet = null;
   if (hasSubnet) {
     const ipService = require('./ipService');
-    if (!ipService.parseCidr(String(data.subnet).trim())) throw new UserError('网段格式不正确，应为如 192.168.10.0/24');
+    subnet = ipService.normalizeSubnetCidr(data.subnet);
+    if (!subnet) throw new UserError('网段格式不正确，应为如 192.168.10.0/24');
+    assertNoSubnetOverlap(subnet, null);
   }
-  if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new UserError('网关IP格式不正确');
+  if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway).trim())) throw new UserError('网关IP格式不正确');
   const { enableIpv6, ipv6Subnet, ipv6Gateway } = normalizeVlanIpv6Fields(data);
   // 与其它字典一致：新增时 sort_order 自动取当前最大值 + 1
   const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM vlan_plans').get().m || 0;
@@ -141,8 +156,8 @@ function addVlanPlan(data) {
   try {
     db.prepare(`INSERT INTO vlan_plans (vlan, name, subnet, mask, gateway, description, address_pool_note, sort_order, is_dynamic, enable_ipv6, ipv6_subnet, ipv6_gateway)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-      data.vlan, data.name || null, data.subnet || null, data.mask || null,
-      data.gateway || null, data.description || null, data.address_pool_note || null,
+      vlan, data.name || null, subnet, data.mask || null,
+      data.gateway ? String(data.gateway).trim() : null, data.description || null, data.address_pool_note || null,
       sortOrder, isDynamic, enableIpv6, ipv6Subnet, ipv6Gateway
     );
   } catch (e) {
@@ -155,31 +170,48 @@ function updateVlanPlan(id, data) {
   const old = db.prepare('SELECT vlan, subnet FROM vlan_plans WHERE id = ?').get(id);
   if (!old) throw new UserError('VLAN规划不存在');
   if (!data.vlan || !String(data.vlan).trim()) throw new UserError('VLAN编号为必填项');
+  const vlan = String(data.vlan).trim();
   const isDynamic = data.is_dynamic ? 1 : 0;
   const hasSubnet = data.subnet && String(data.subnet).trim();
   if (!isDynamic && !hasSubnet) throw new UserError('网段为必填项');
+  let subnet = null;
   if (hasSubnet) {
     const ipService = require('./ipService');
-    if (!ipService.parseCidr(String(data.subnet).trim())) throw new UserError('网段格式不正确，应为如 192.168.10.0/24');
+    subnet = ipService.normalizeSubnetCidr(data.subnet);
+    if (!subnet) throw new UserError('网段格式不正确，应为如 192.168.10.0/24');
+    assertNoSubnetOverlap(subnet, id);
+    // 修改网段时：原范围内登记记录必须仍落在新网段内
+    if (old.subnet) {
+      const oldParsed = ipService.parseCidr(old.subnet);
+      if (oldParsed) {
+        const stuck = db.prepare(
+          'SELECT COUNT(*) as cnt FROM ip_records WHERE vlan = ? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ? AND NOT (ip_sort >= ? AND ip_sort <= ?)'
+        ).get(old.vlan, oldParsed.network, oldParsed.broadcast,
+              ipService.parseCidr(subnet).network, ipService.parseCidr(subnet).broadcast);
+        if (stuck && stuck.cnt > 0) {
+          throw new UserError(`无法修改网段：仍有 ${stuck.cnt} 条登记记录落在原网段但不在新网段内，请先迁移或删除这些记录`);
+        }
+      }
+    }
   }
-  if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway))) throw new UserError('网关IP格式不正确');
+  if (data.gateway && data.gateway !== '-' && !/^\d{1,3}(\.\d{1,3}){3}$/.test(String(data.gateway).trim())) throw new UserError('网关IP格式不正确');
   const { enableIpv6, ipv6Subnet, ipv6Gateway } = normalizeVlanIpv6Fields(data);
   db.transaction(() => {
     db.prepare(`UPDATE vlan_plans SET vlan=?, name=?, subnet=?, mask=?, gateway=?, description=?, address_pool_note=?, sort_order=?, is_dynamic=?, enable_ipv6=?, ipv6_subnet=?, ipv6_gateway=? WHERE id=?`).run(
-      data.vlan, data.name || null, data.subnet || null, data.mask || null,
-      data.gateway || null, data.description || null, data.address_pool_note || null,
+      vlan, data.name || null, subnet, data.mask || null,
+      data.gateway ? String(data.gateway).trim() : null, data.description || null, data.address_pool_note || null,
       normalizeSortOrder(data.sort_order, 0), isDynamic, enableIpv6, ipv6Subnet, ipv6Gateway, id
     );
-    if (old.vlan !== data.vlan) {
+    if (old.vlan !== vlan) {
       const ipService = require('./ipService');
       const parsed = old.subnet ? ipService.parseCidr(old.subnet) : null;
       if (parsed) {
-        db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?').run(data.vlan, old.vlan, parsed.network, parsed.broadcast);
+        db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=? AND ip_sort IS NOT NULL AND ip_sort >= ? AND ip_sort <= ?').run(vlan, old.vlan, parsed.network, parsed.broadcast);
       } else {
         // 无 IPv4 网段的规划（如纯动态池）：仅当同编号下没有其它规划时才整体改号
         const siblings = db.prepare('SELECT id FROM vlan_plans WHERE vlan = ? AND id != ?').all(old.vlan, id);
         if (siblings.length > 0) throw new UserError('同 VLAN 编号下存在多个规划，无法安全地整体改号，请先处理其它规划');
-        db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=?').run(data.vlan, old.vlan);
+        db.prepare('UPDATE ip_records SET vlan=? WHERE vlan=?').run(vlan, old.vlan);
       }
     }
   });
@@ -316,11 +348,24 @@ function cleanupAuditLogs(beforeDate) {
 }
 
 function auditLog(user, action, detail, opts = {}) {
-  // ip_address 优先记录操作者来源 IP（actor_ip）；兼容旧调用传入的业务对象 IP
-  const actorIp = opts.actor_ip || opts.ip_address || null;
+  // ip_address 列统一记录操作者来源 IP（actor_ip / req.ip）
+  // 业务对象 IP 请写在 detail 文案中，或通过 opts.business_ip 追加到 detail
+  const actorIp = opts.actor_ip
+    || (opts.req && (opts.req.ip || null))
+    || null;
+  let detailText = detail == null ? null : String(detail);
+  const businessIp = opts.business_ip || null;
+  if (businessIp && detailText && !detailText.includes(String(businessIp))) {
+    detailText = detailText + ` [对象IP: ${businessIp}]`;
+  }
   db.prepare('INSERT INTO audit_log (user_id, username, action, detail, target_type, target_id, ip_address) VALUES (?,?,?,?,?,?,?)').run(
-    user ? user.id : null, user ? user.username : null, action, detail || null,
-    opts.target_type || null, opts.target_id || null, actorIp
+    user ? user.id : null,
+    user ? user.username : null,
+    action,
+    detailText,
+    opts.target_type || null,
+    opts.target_id || null,
+    actorIp
   );
 }
 

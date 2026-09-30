@@ -146,13 +146,13 @@ function processRows(rows, req, strategy, atomic = false) {
   } catch (e) {
     if (e instanceof ImportRollback) {
       const r = e.result;
-      dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId} 严格模式已整体回滚；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}，跳过${r.skip}条，错误/警告${r.totalErrors}条`, { target_type: 'import' });
+      dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId} 严格模式已整体回滚；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}，跳过${r.skip}条，错误/警告${r.totalErrors}条`, { target_type: 'import', actor_ip: req.ip });
       return { success: 0, updated: 0, skip: r.skip, errors: r.errors, totalErrors: r.totalErrors, rolledBack: true, batchId };
     }
     throw e;
   }
   const errSummary = result.allErrors.slice(0, 10).join('；').slice(0, 1500);
-  dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId}；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}；成功${result.success}条，更新${result.updated}条，跳过${result.skip}条${result.totalErrors > 0 ? `，错误/警告${result.totalErrors}条（前10条：${errSummary}）` : ''}`, { target_type: 'import' });
+  dictService.auditLog(req.session.user, 'import_data', `导入批次 ${batchId}；操作者 ${req.session.user.username}；文件 ${getFileName(req)}（SHA-256 ${getFileSha256(req)}）；共${rows.length}行，策略 ${strategy}；成功${result.success}条，更新${result.updated}条，跳过${result.skip}条${result.totalErrors > 0 ? `，错误/警告${result.totalErrors}条（前10条：${errSummary}）` : ''}`, { target_type: 'import', actor_ip: req.ip });
   delete result.allErrors;
   return { ...result, batchId };
 }

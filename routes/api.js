@@ -24,6 +24,17 @@ function fail(req, res, e, status = 400, fallback = '操作失败，请稍后重
   return res.status(st).json({ error: msg, requestId: req.id });
 }
 
+
+/** 写审计并自动带上操作者来源 IP；原 opts.ip_address 视为业务对象 IP */
+function auditFromReq(req, action, detail, opts = {}) {
+  const o = { ...opts, actor_ip: req.ip || null, req };
+  if (o.ip_address != null && o.business_ip == null) {
+    o.business_ip = o.ip_address;
+  }
+  delete o.ip_address;
+  return dictService.auditLog(req.session && req.session.user, action, detail, o);
+}
+
 // --- Dashboard stats ---
 router.get('/stats', requireAuth, (req, res) => {
   const scope = getReadableVlanScope(req);
@@ -113,7 +124,7 @@ router.post('/records', requireAuth, (req, res) => {
   }
   try {
     const record = ipService.createRecord(req.body);
-    dictService.auditLog(req.session.user, 'create_record', `新增IP记录: ${record.ip || 'N/A'} (ID:${record.id})`, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
+    auditFromReq(req, 'create_record', `新增IP记录: ${record.ip || 'N/A'} (ID:${record.id})`, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
     res.status(201).json(record);
   } catch (e) {
     const msg = publicMessage(e, '请检查输入内容');
@@ -152,9 +163,9 @@ router.put('/records/:id', requireAuth, (req, res) => {
       }
     }
     const detail = changes.length ? `修改IP记录: ${record.ip || 'N/A'} (ID:${record.id}) [${changes.join(', ')}]` : `修改IP记录: ${record.ip || 'N/A'} (ID:${record.id})`;
-    dictService.auditLog(req.session.user, 'update_record', detail, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
+    auditFromReq(req, 'update_record', detail, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
     if (oldRecord.mac && record.mac && oldRecord.mac !== record.mac) {
-      dictService.auditLog(req.session.user, 'mac_conflict', `IP ${record.ip || 'N/A'} MAC变更: ${oldRecord.mac} → ${record.mac}`, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
+      auditFromReq(req, 'mac_conflict', `IP ${record.ip || 'N/A'} MAC变更: ${oldRecord.mac} → ${record.mac}`, { target_type: 'ip_record', target_id: record.id, ip_address: record.ip });
     }
     res.json(record);
   } catch (e) {
@@ -172,7 +183,7 @@ router.delete('/records/:id', requireAuth, (req, res) => {
     return res.status(403).json({ error: '您没有管理该 VLAN / 网段的权限' });
   }
   ipService.deleteRecord(req.params.id);
-  dictService.auditLog(req.session.user, 'delete_record', `删除IP记录: ${existing.ip || 'N/A'} (ID:${existing.id})`, { target_type: 'ip_record', target_id: existing.id, ip_address: existing.ip });
+  auditFromReq(req, 'delete_record', `删除IP记录: ${existing.ip || 'N/A'} (ID:${existing.id})`, { target_type: 'ip_record', target_id: existing.id, ip_address: existing.ip });
   res.json({ success: true });
 });
 
@@ -218,6 +229,13 @@ router.get('/subnet/:prefix', requireAuth, (req, res) => {
       }
       records = ipService.getSubnetRecords(prefix, sort, order, plan ? plan.vlan : null);
     }
+    // 按 plan:ID 请求时（含超管），结果必须限定在该规划语义内，避免同号静态网段混入动态池视图
+    if (raw.startsWith('plan:') && plan && Array.isArray(records)) {
+      const planScope = { all: false, fullVlans: [], planIds: [Number(plan.id)], vlans: ['plan:' + plan.id] };
+      records = records.filter(r => ipService.recordInScope(planScope, r));
+    } else if (!scope.all && Array.isArray(records)) {
+      records = records.filter(r => ipService.recordInScope(scope, r));
+    }
     res.json({ prefix: raw, records, plan: plan || null });
   } catch (e) {
     logError(req, e, 'subnet');
@@ -237,20 +255,20 @@ router.post('/dict/device-types', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addDeviceType(req.body.name, req.body.description);
-    dictService.auditLog(req.session.user, 'add_device_type', `新增设备类型: ${req.body.name}`, { target_type: 'device_type' });
+    auditFromReq(req, 'add_device_type', `新增设备类型: ${req.body.name}`, { target_type: 'device_type' });
     res.json(dictService.getDeviceTypes());
   } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/device-types/:id', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try { dictService.updateDeviceType(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
-  dictService.auditLog(req.session.user, 'update_device_type', `修改设备类型: ${req.body.name}`, { target_type: 'device_type', target_id: req.params.id });
+  auditFromReq(req, 'update_device_type', `修改设备类型: ${req.body.name}`, { target_type: 'device_type', target_id: req.params.id });
   res.json(dictService.getDeviceTypes());
 });
 router.delete('/dict/device-types/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deleteDeviceType(req.params.id);
-    dictService.auditLog(req.session.user, 'delete_device_type', `ID:${req.params.id}`, { target_type: 'device_type', target_id: req.params.id });
+    auditFromReq(req, 'delete_device_type', `ID:${req.params.id}`, { target_type: 'device_type', target_id: req.params.id });
     res.json({ success: true });
   } catch (e) { fail(req, res, e); }
 });
@@ -259,20 +277,20 @@ router.post('/dict/statuses', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addStatus(req.body.name, req.body.description);
-    dictService.auditLog(req.session.user, 'add_status', `新增使用状态: ${req.body.name}`, { target_type: 'status' });
+    auditFromReq(req, 'add_status', `新增使用状态: ${req.body.name}`, { target_type: 'status' });
     res.json(dictService.getStatuses());
   } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/statuses/:id', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try { dictService.updateStatus(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
-  dictService.auditLog(req.session.user, 'update_status', `修改使用状态: ${req.body.name}`, { target_type: 'status', target_id: req.params.id });
+  auditFromReq(req, 'update_status', `修改使用状态: ${req.body.name}`, { target_type: 'status', target_id: req.params.id });
   res.json(dictService.getStatuses());
 });
 router.delete('/dict/statuses/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deleteStatus(req.params.id);
-    dictService.auditLog(req.session.user, 'delete_status', `ID:${req.params.id}`, { target_type: 'status', target_id: req.params.id });
+    auditFromReq(req, 'delete_status', `ID:${req.params.id}`, { target_type: 'status', target_id: req.params.id });
     res.json({ success: true });
   } catch (e) { fail(req, res, e); }
 });
@@ -281,20 +299,20 @@ router.post('/dict/departments', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try {
     dictService.addDepartment(req.body.name);
-    dictService.auditLog(req.session.user, 'add_department', `新增部门: ${req.body.name}`, { target_type: 'department' });
+    auditFromReq(req, 'add_department', `新增部门: ${req.body.name}`, { target_type: 'department' });
     res.json(dictService.getDepartments());
   } catch (e) { fail(req, res, e); }
 });
 router.put('/dict/departments/:id', requireRole('superadmin'), (req, res) => {
   try { checkDictBody(req.body); limitedName(req.body.name, '名称'); } catch (e) { return fail(req, res, e); }
   try { dictService.updateDepartment(req.params.id, req.body); } catch (e) { return fail(req, res, e); }
-  dictService.auditLog(req.session.user, 'update_department', `修改部门: ${req.body.name}`, { target_type: 'department', target_id: req.params.id });
+  auditFromReq(req, 'update_department', `修改部门: ${req.body.name}`, { target_type: 'department', target_id: req.params.id });
   res.json(dictService.getDepartments());
 });
 router.delete('/dict/departments/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deleteDepartment(req.params.id);
-    dictService.auditLog(req.session.user, 'delete_department', `ID:${req.params.id}`, { target_type: 'department', target_id: req.params.id });
+    auditFromReq(req, 'delete_department', `ID:${req.params.id}`, { target_type: 'department', target_id: req.params.id });
     res.json({ success: true });
   } catch (e) { fail(req, res, e); }
 });
@@ -303,7 +321,7 @@ router.post('/dict/vlan-plans', requireRole('superadmin'), (req, res) => {
   try {
     checkDictBody(req.body);
     dictService.addVlanPlan(req.body);
-    dictService.auditLog(req.session.user, 'add_vlan_plan', `新增VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan' });
+    auditFromReq(req, 'add_vlan_plan', `新增VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan' });
     res.json(dictService.getVlanPlans());
   } catch (e) { fail(req, res, e); }
 });
@@ -311,14 +329,14 @@ router.put('/dict/vlan-plans/:id', requireRole('superadmin'), (req, res) => {
   try {
     checkDictBody(req.body);
     dictService.updateVlanPlan(req.params.id, req.body);
-    dictService.auditLog(req.session.user, 'update_vlan_plan', `修改VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan', target_id: req.params.id });
+    auditFromReq(req, 'update_vlan_plan', `修改VLAN规划: VLAN ${req.body.vlan} (${req.body.name || '-'}) 网段 ${req.body.subnet}`, { target_type: 'vlan_plan', target_id: req.params.id });
     res.json(dictService.getVlanPlans());
   } catch (e) { fail(req, res, e); }
 });
 router.delete('/dict/vlan-plans/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deleteVlanPlan(req.params.id);
-    dictService.auditLog(req.session.user, 'delete_vlan_plan', `ID:${req.params.id}`, { target_type: 'vlan_plan', target_id: req.params.id });
+    auditFromReq(req, 'delete_vlan_plan', `ID:${req.params.id}`, { target_type: 'vlan_plan', target_id: req.params.id });
     res.json({ success: true });
   } catch (e) { fail(req, res, e); }
 });
@@ -327,7 +345,7 @@ router.post('/dict/prefix-gateways', requireRole('superadmin'), (req, res) => {
   try {
     checkDictBody(req.body);
     dictService.addPrefixGateway(req.body.prefix, req.body.gateway, req.body.default_vlan);
-    dictService.auditLog(req.session.user, 'add_prefix_gateway', `新增网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway' });
+    auditFromReq(req, 'add_prefix_gateway', `新增网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway' });
     res.json(dictService.getPrefixGateways());
   } catch (e) { fail(req, res, e); }
 });
@@ -335,14 +353,14 @@ router.put('/dict/prefix-gateways/:id', requireRole('superadmin'), (req, res) =>
   try {
     checkDictBody(req.body);
     dictService.updatePrefixGateway(req.params.id, req.body.prefix, req.body.gateway, req.body.default_vlan);
-    dictService.auditLog(req.session.user, 'update_prefix_gateway', `修改网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway', target_id: req.params.id });
+    auditFromReq(req, 'update_prefix_gateway', `修改网关映射: ${req.body.prefix} → ${req.body.gateway}`, { target_type: 'prefix_gateway', target_id: req.params.id });
     res.json(dictService.getPrefixGateways());
   } catch (e) { fail(req, res, e); }
 });
 router.delete('/dict/prefix-gateways/:id', requireRole('superadmin'), (req, res) => {
   try {
     dictService.deletePrefixGateway(req.params.id);
-    dictService.auditLog(req.session.user, 'delete_prefix_gateway', `ID:${req.params.id}`, { target_type: 'prefix_gateway', target_id: req.params.id });
+    auditFromReq(req, 'delete_prefix_gateway', `ID:${req.params.id}`, { target_type: 'prefix_gateway', target_id: req.params.id });
     res.json({ success: true });
   } catch (e) { fail(req, res, e); }
 });
@@ -351,7 +369,7 @@ router.delete('/dict/prefix-gateways/:id', requireRole('superadmin'), (req, res)
 router.post('/system/checkpoint', requireRole('superadmin'), (req, res) => {
   try {
     const result = dictService.checkpointDatabase();
-    dictService.auditLog(req.session.user, 'db_checkpoint', '手动执行数据库Checkpoint');
+    auditFromReq(req, 'db_checkpoint', '手动执行数据库Checkpoint');
     res.json(result);
   } catch (e) {
     fail(req, res, e, 500, '数据库 Checkpoint 失败');
@@ -362,8 +380,7 @@ router.post('/system/checkpoint', requireRole('superadmin'), (req, res) => {
 router.post('/system/backup', requireRole('superadmin'), (req, res) => {
   try {
     const result = dictService.backupDatabase();
-    dictService.auditLog(
-      req.session.user,
+    auditFromReq(req,
       'db_backup',
       '手动备份数据库: ' + result.filename,
       { target_type: 'system' }
@@ -387,7 +404,7 @@ router.put('/settings/:key', requireRole('superadmin'), (req, res) => {
   if (typeof value !== 'string' || !value.trim()) return res.status(400).json({ error: '配置值不能为空' });
   if (value.length > ALLOWED_SETTINGS[key]) return res.status(400).json({ error: `配置值过长（最多 ${ALLOWED_SETTINGS[key]} 个字符）` });
   dictService.setSetting(key, value.trim());
-  dictService.auditLog(req.session.user, 'update_setting', `${key} = ${value.trim()}`);
+  auditFromReq(req, 'update_setting', `${key} = ${value.trim()}`);
   res.json({ success: true });
 });
 
@@ -407,7 +424,7 @@ router.post('/users', requireRole('superadmin'), (req, res) => {
   if (!['superadmin', 'admin', 'viewer'].includes(role)) return res.status(400).json({ error: '无效角色' });
   try {
     const id = userService.createUser(username, password, role, display_name);
-    dictService.auditLog(req.session.user, 'create_user', `创建用户: ${String(username).trim()} (${role})`);
+    auditFromReq(req, 'create_user', `创建用户: ${String(username).trim()} (${role})`);
     res.status(201).json({ id, username: String(username).trim(), role, display_name, enabled: 1 });
   } catch (e) {
     if (e.expose) return fail(req, res, e);
@@ -419,6 +436,7 @@ router.post('/users', requireRole('superadmin'), (req, res) => {
 
 router.put('/users/:id', requireRole('superadmin'), (req, res) => {
   if (req.body.username !== undefined && !String(req.body.username).trim()) return res.status(400).json({ error: '用户名不能为空' });
+  const before = userService.findById ? userService.findById(req.params.id) : null;
   let user;
   try {
     user = userService.updateUser(req.params.id, req.body, req.session.user.id);
@@ -427,7 +445,17 @@ router.put('/users/:id', requireRole('superadmin'), (req, res) => {
     return fail(req, res, e);
   }
   if (!user) return res.status(404).json({ error: '用户不存在' });
-  dictService.auditLog(req.session.user, 'update_user', `修改用户: ${user.username}`);
+  const changes = [];
+  if (before) {
+    if (before.username !== user.username) changes.push(`用户名: ${before.username} → ${user.username}`);
+    if ((before.display_name || '') !== (user.display_name || '')) changes.push(`显示名: ${before.display_name || '空'} → ${user.display_name || '空'}`);
+    if (before.role !== user.role) changes.push(`角色: ${before.role} → ${user.role}`);
+    if (Number(before.enabled) !== Number(user.enabled)) changes.push(`启用: ${before.enabled} → ${user.enabled}`);
+  }
+  const detail = changes.length
+    ? `修改用户ID:${req.params.id} [${changes.join(', ')}]`
+    : `修改用户ID:${req.params.id} 用户名:${user.username} 角色:${user.role} 启用:${user.enabled}`;
+  auditFromReq(req, 'update_user', detail, { actor_ip: req.ip });
   const isSelf = parseInt(req.params.id, 10) === req.session.user.id;
   if (isSelf) {
     req.session.user.username = user.username;
@@ -455,7 +483,7 @@ router.post('/users/:id/reset-password', requireRole('superadmin'), (req, res) =
   const targetId = parseInt(req.params.id, 10);
   if (targetId === req.session.user.id) sessionStore.destroyUser(targetId, req.sessionID);
   else sessionStore.destroyUser(targetId);
-  dictService.auditLog(req.session.user, 'reset_password', `重置用户ID:${req.params.id}密码`);
+  auditFromReq(req, 'reset_password', `重置用户ID:${req.params.id}密码`);
   res.json({ success: true });
 });
 
@@ -470,7 +498,8 @@ router.put('/users/:id/permissions', requireRole('superadmin'), (req, res) => {
   // 权限范围变化：撤销目标用户旧会话，使其重新登录
   const targetId = parseInt(req.params.id, 10);
   if (targetId !== req.session.user.id) sessionStore.destroyUser(targetId);
-  dictService.auditLog(req.session.user, 'update_permissions', `修改用户ID:${req.params.id} VLAN权限`);
+  const permSummary = (Array.isArray(req.body.vlans) ? req.body.vlans : []).map(String).slice(0, 40).join(',');
+  auditFromReq(req, 'update_permissions', `修改用户ID:${req.params.id} VLAN权限 → [${permSummary}]`);
   res.json({ success: true });
 });
 
@@ -486,7 +515,7 @@ router.delete('/users/:id', requireRole('superadmin'), (req, res) => {
     return fail(req, res, e);
   }
   sessionStore.destroyUser(user.id);
-  dictService.auditLog(req.session.user, 'delete_user', `删除用户: ${user.username}`);
+  auditFromReq(req, 'delete_user', `删除用户: ${user.username}`);
   res.json({ success: true });
 });
 
@@ -502,7 +531,7 @@ router.post('/change-password', requireAuth, (req, res) => {
   // 改密后撤销该用户的其他会话，保留当前会话；并解除"必须改密"状态
   sessionStore.destroyUser(req.session.user.id, req.sessionID);
   req.session.user.mustChangePassword = false;
-  dictService.auditLog(req.session.user, 'change_password', '修改自身密码');
+  auditFromReq(req, 'change_password', '修改自身密码');
   res.json({ success: true });
 });
 
@@ -518,7 +547,7 @@ router.post('/audit-logs/cleanup', requireRole('superadmin'), (req, res) => {
   } catch (e) {
     return fail(req, res, e);
   }
-  dictService.auditLog(req.session.user, 'cleanup_audit_logs', `清理 ${beforeDate} 之前的审计日志，共 ${deleted} 条`, {
+  auditFromReq(req, 'cleanup_audit_logs', `清理 ${beforeDate} 之前的审计日志，共 ${deleted} 条`, {
     target_type: 'audit_log',
     actor_ip: req.ip,
   });
@@ -596,7 +625,7 @@ router.get('/export/records', requireAuth, (req, res) => {
   }
   res.end();
   try {
-    dictService.auditLog(req.session.user, 'export_records', `导出IP记录 ${first.total} 条（筛选: ${JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && !['sort','order','scope'].includes(k)))).slice(0, 300)}）`, { target_type: 'ip_record' });
+    auditFromReq(req, 'export_records', `导出IP记录 ${first.total} 条（筛选: ${JSON.stringify(Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && !['sort','order','scope'].includes(k)))).slice(0, 300)}）`, { target_type: 'ip_record' });
   } catch (e) { logError(req, e, 'export-audit'); }
 });
 
@@ -643,6 +672,16 @@ router.get('/export/subnet/:prefix', requireAuth, (req, res) => {
     }
     records = ipService.getSubnetRecords(prefix, 'ip', 'asc', plan ? plan.vlan : null);
   }
+  if (raw.startsWith('plan:') && plan && Array.isArray(records)) {
+    const planScope = { all: false, fullVlans: [], planIds: [Number(plan.id)], vlans: ['plan:' + plan.id] };
+    records = records.filter(r => ipService.recordInScope(planScope, r));
+  } else if (!scope.all && Array.isArray(records)) {
+    records = records.filter(r => ipService.recordInScope(scope, r));
+  }
+  try {
+    auditFromReq(req, 'export_subnet', `导出网段明细: ${raw}（${records.length} 条）`, { target_type: 'export', ip_address: null });
+  } catch (e) { /* 审计失败不影响导出 */ }
+
   const headers = ['主机号','IP地址','IPv6地址','设备名称','部门','使用人','状态','MAC地址','网关','VLAN','设备类型','物理位置','上层交换机','交换机端口','向日葵ID','登记日期','备注'];
   const cols = ['host','ip','ipv6','device_name','department','user_name','status','mac','gateway','vlan','device_type','location','upper_switch','switch_port','sunlogin_id','registered_at','remark'];
   let csv = '\uFEFF' + headers.join(',') + '\n';
