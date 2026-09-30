@@ -480,3 +480,24 @@ test('网段规划规范化与重叠拒绝（M-2）', async () => {
   assert.match(String(body.error || ''), /重叠/);
 });
 
+
+test('AUDIT_LOG_RETENTION_DAYS 仅接受纯整数', () => {
+  const { getAuditLogRetentionDays } = require('../utils/retention');
+  const orig = process.env.AUDIT_LOG_RETENTION_DAYS;
+  const cases = [
+    [undefined, 90], ['', 90], ['abc', 90], ['1e3', 90], ['30days', 90], ['45.9', 90],
+    ['0x10', 90], ['0', 90], ['-5', 90], ['3651', 90], ['99999', 90],
+    ['1', 1], ['7', 7], ['30', 30], ['90', 90], ['365', 365], ['3650', 3650],
+  ];
+  try {
+    for (const [v, expected] of cases) {
+      if (v === undefined) delete process.env.AUDIT_LOG_RETENTION_DAYS;
+      else process.env.AUDIT_LOG_RETENTION_DAYS = v;
+      assert.strictEqual(getAuditLogRetentionDays(), expected, `input=${JSON.stringify(v)}`);
+    }
+  } finally {
+    if (orig === undefined) delete process.env.AUDIT_LOG_RETENTION_DAYS;
+    else process.env.AUDIT_LOG_RETENTION_DAYS = orig;
+  }
+});
+

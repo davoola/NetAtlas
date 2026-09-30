@@ -1,6 +1,6 @@
 {
   "name": "NetAtlas",
-  "version": "1.0.0",
+  "version": "4.0.4",
   "description": "网图·IP管家(NetAtlas)",
   "main": "index.js",
   "private": true,

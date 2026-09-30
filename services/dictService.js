@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const db = require('../db');
 const { UserError } = require('../utils/errors');
+const { getAuditLogRetentionDays } = require('../utils/retention');
 
 /** 排序值：缺省为 0；必须为 0–999999 的整数 */
 function normalizeSortOrder(v, fallback = 0) {
@@ -335,11 +336,11 @@ function backupDatabase() {
 }
 
 function cleanupAuditLogs(beforeDate) {
-  const MIN_RETENTION_DAYS = 90;
+  const MIN_RETENTION_DAYS = getAuditLogRetentionDays();
   const cutoff = new Date(beforeDate + 'T00:00:00');
   if (Number.isNaN(cutoff.getTime())) throw new UserError('请输入有效的清理截止日期');
   const minDate = new Date(Date.now() - MIN_RETENTION_DAYS * 86400000);
-  // 只允许清理「至少 90 天以前」的日志：beforeDate 必须 <= 今天-90天
+  // 只允许清理「最短保留期之前」的日志：beforeDate 必须 <= 今天 - N 天
   if (cutoff > minDate) {
     throw new UserError(`审计日志至少保留 ${MIN_RETENTION_DAYS} 天，不可清理近期日志`);
   }
