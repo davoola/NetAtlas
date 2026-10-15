@@ -184,7 +184,7 @@ function normalizeMac(mac) {
   if (mac === null || mac === undefined) return null;
   const hex = String(mac).replace(/[^0-9a-fA-F]/g, '').toUpperCase();
   if (!hex) return null;
-  if (hex.length !== 12) return hex; // 非标准长度时仍保存清洗后的大写十六进制
+  if (hex.length !== 12) throw new UserError('MAC地址格式不正确，需为12位十六进制字符（可含分隔符）');
   return hex.slice(0, 4) + '-' + hex.slice(4, 8) + '-' + hex.slice(8, 12);
 }
 

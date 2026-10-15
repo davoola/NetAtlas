@@ -396,11 +396,17 @@ async function saveRecord() {
     }
   }
 
+  const macRaw = document.getElementById('f_mac').value;
+  const macHex = String(macRaw || '').replace(/[^0-9a-fA-F]/g, '');
+  if (macRaw && String(macRaw).trim() !== '' && macHex.length !== 12) {
+    return showToast('MAC地址格式不正确，需为12位十六进制字符（可含分隔符）', 'error');
+  }
+
   const data = {
     vlan: vlanToken,
     ip: ip,
     ipv6: planSupportsIpv6(vlanToken) ? ipv6 : '',
-    mac: formatMacInput(document.getElementById('f_mac').value),
+    mac: formatMacInput(macRaw),
     device_type: document.getElementById('f_device_type').value,
     device_name: document.getElementById('f_device_name').value,
     location: document.getElementById('f_location').value,
