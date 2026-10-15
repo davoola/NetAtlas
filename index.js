@@ -145,12 +145,6 @@ try {
   }
 } catch (e) { /* users 表未初始化时忽略，提示运行 init-db */ }
 
-/*
 app.listen(PORT, () => {
   console.log(`NetAtlas[网图·IP管家]系统已启动: http://localhost:${PORT}`);
-});
-*/
-
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`NetAtlas[网图·IP管家]系统已启动: http://0.0.0.0:${PORT}`);
 });
