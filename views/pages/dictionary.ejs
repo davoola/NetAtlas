@@ -60,7 +60,7 @@
       <button class="btn btn-primary" id="btnAddVlan">+ 新增VLAN规划</button>
     </div>
     <div class="table-wrap">
-      <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>说明</th><th>可用地址</th><th>动态池</th><th>排序</th><th>操作</th></tr></thead>
+      <table class="data-table"><thead><tr><th>VLAN</th><th>名称</th><th>网段</th><th>掩码</th><th>网关</th><th>IPv6</th><th>说明</th><th>可用地址</th><th>动态池</th><th>排序</th><th>操作</th></tr></thead>
       <tbody id="dictVlanPlans"></tbody></table>
     </div>
   </div>
@@ -125,6 +125,15 @@
         <div class="form-group full"><label>可用地址说明</label><input type="text" id="vp_address_pool_note"></div>
         <div class="form-group full form-checkbox">
           <label for="vp_is_dynamic"><input type="checkbox" id="vp_is_dynamic"> 动态IP池（DHCP，不强制登记IP地址）</label>
+        </div>
+        <div class="form-group full form-checkbox">
+          <label for="vp_enable_ipv6"><input type="checkbox" id="vp_enable_ipv6"> 启用 IPv6</label>
+        </div>
+        <div id="vp_ipv6_fields" style="display:none" class="form-group full">
+          <div class="form-grid" style="margin:0">
+            <div class="form-group"><label>IPv6 网段</label><input type="text" id="vp_ipv6_subnet" placeholder="如 2001:250:5401:101::/64"></div>
+            <div class="form-group"><label>IPv6 网关</label><input type="text" id="vp_ipv6_gateway" placeholder="可选"></div>
+          </div>
         </div>
       </form>
     </div>
